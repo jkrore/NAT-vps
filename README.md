@@ -12,7 +12,9 @@
 
 3.  **安全可重复执行 (幂等性)**: 这是衡量运维脚本专业性的关键。本脚本在修改配置文件前，会检查相应配置是否已存在。这意味着您可以**安全地重复运行此脚本**，它只会补充缺失的配置，而不会造成配置文件的重复和冗余。
 
-## 主要功能详解
+---
+
+## 功能详解
 
 脚本集成了以下八大核心优化功能：
 
@@ -36,37 +38,108 @@
 - **功能**: 将系统的DNS解析服务器修改为更快速、更可靠的公共DNS（Google `8.8.8.8` 和 Cloudflare `1.1.1.1`）。同时，会配置系统优先使用IPv4网络，避免在某些网络环境下因IPv6导致的速度缓慢问题。
 
 #### 7. 应用Linux内核参数优化
-- **功能**: 向 `/etc/sysctl.conf` 文件中追加一系列经过社区和业界广泛验证的内核优化参数。这些参数能有效：
-    - 增大TCP缓冲区，提升网络传输效率。
-    - 增加TCP连接队列长度，以应对高并发场景。
-    - 开启TCP Fast Open，减少建立连接的延迟。
-    - 优化TIME-WAIT套接字重用，降低系统资源占用。
+- **功能**: 向 `/etc/sysctl.conf` 文件中追加一系列经过社区和业界广泛验证的内核优化参数。这些参数能有效增大TCP缓冲区、增加TCP连接队列、开启TCP Fast Open等，全面提升网络性能。
 
 #### 8. 安装性能优化辅助工具
 - **功能**:
-    - **Haveged**: 安装并启动`haveged`服务，这是一个熵生成器，可以解决因系统熵值过低导致的程序（尤其是加密应用）随机数生成缓慢、阻塞等问题。
+    - **Haveged**: 安装并启动`haveged`服务，解决因系统熵值过低导致的程序（尤其是加密应用）随机数生成缓慢、阻塞等问题。
     - **Tuned** (仅CentOS): 安装并启用`tuned`服务，并将其配置文件设置为`virtual-guest`模式，这是专门为虚拟机环境优化的官方性能调优方案。
 
-## 如何使用
+---
 
-您只需登录到VPS，然后执行下面的一行命令即可下载并启动脚本。
+## 如何使用：一键执行
 
-#### 推荐使用 `wget`
+**前提条件**: 您必须以 `root` 用户身份登录到您的VPS。
+
+您可以通过以下两种方式中的任意一种，一键下载并运行本脚本。
+
+#### 方式一：使用 `wget` (推荐)
 ```bash
-wget -O optimizer.sh [您的vps.sh文件的Raw链接] && bash optimizer.sh
+wget -O optimizer.sh https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh && bash optimizer.sh
+```
+> 这条命令会先将脚本文件下载并保存为 `optimizer.sh`，下载成功后立即执行它。
+
+#### 方式二：使用 `curl`
+```bash
+curl -sS https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh | bash
+```
+> 这条命令会直接在内存中下载脚本内容并通过管道传送给 `bash` 执行，不会在硬盘上留下脚本文件。
+
+---
+
+## 如何卸载：一键恢复与删除
+
+**重要警告**: 卸载脚本所做的系统更改比安装要复杂。下面的“一键恢复脚本”会尝试自动完成所有可逆操作，但请在执行前理解其内容。
+
+### 一键恢复脚本
+直接复制以下所有代码，粘贴到您的VPS终端中，然后按回车键执行。它会自动完成大部分恢复工作。
+
+```bash
+bash <(curl -sS https://gist.githubusercontent.com/HelperFun/1694f713111921554178433891a5b14a/raw/uninstall_optimizer.sh)
 ```
 
-#### 或者使用 `curl`
-```bash
-curl -sS [您的vps.sh文件的Raw链接] | bash
-```
-脚本运行后，会显示一个交互式菜单。您可以输入 `1` 并回车，即可开始全自动优化流程。
+### 手动恢复分步指南
+如果您想手动控制恢复过程，或者一键脚本出现问题，请按照以下步骤操作。
 
-## 注意事项
-1.  **Root权限**: 本脚本必须以 `root` 用户身份运行。
-2.  **数据备份**: 在任何生产环境的服务器上执行此脚本前，请务必做好重要数据的备份。
-3.  **建议重启**: 全部优化步骤完成后，强烈建议您重启 (`reboot`) 服务器，以确保所有的内核参数和系统设置都能完全生效。
+#### 1. 恢复 Swap 空间
+```bash
+# 1. 禁用swap
+sudo swapoff /swapfile
+
+# 2. 从fstab中移除swap的自动挂载项
+sudo sed -i '/\/swapfile/d' /etc/fstab
+
+# 3. 删除swap文件本身
+sudo rm /swapfile
+```
+
+#### 2. 移除内核优化参数 (包括BBR)
+```bash
+# 从配置文件中删除BBR和FQ的相关设置
+sudo sed -i '/net.core.default_qdisc=fq/d' /etc/sysctl.conf
+sudo sed -i '/net.ipv4.tcp_congestion_control=bbr/d' /etc/sysctl.conf
+
+# 从配置文件中删除由脚本添加的整个优化块
+sudo sed -i '/#--- Kernel Optimization by VPS-Optimizer-Ultimate/,/#---/d' /etc/sysctl.conf
+
+# 让更改立即生效
+sudo sysctl -p
+```
+
+#### 3. 恢复 DNS 和 IPv4 优先设置
+```bash
+# 恢复gai.conf (移除IPv4优先)
+sudo sed -i '/precedence ::ffff:0:0\/96  100/d' /etc/gai.conf
+
+# 恢复resolv.conf (DNS)
+# 注意：重启网络服务或重启系统通常会自动恢复DNS设置。
+sudo reboot
+```
+
+#### 4. 卸载性能优化工具
+```bash
+# 对于 Debian/Ubuntu 系统
+sudo apt-get purge -y haveged
+
+# 对于 CentOS 系统
+sudo yum remove -y haveged tuned
+```
+
+#### 5. 恢复 SSH Root 登录设置 (可选)
+如果您想禁止`root`用户通过密码登录（更安全的方式），可以执行以下操作：
+```bash
+# 编辑SSH配置文件，将PermitRootLogin改为prohibit-password
+sudo sed -i 's/PermitRootLogin yes/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config
+
+# 重启SSH服务
+sudo systemctl restart sshd
+```
+
+### 不可逆的操作
+以下由脚本执行的操作是**不可逆**的，但通常也无需恢复：
+- **软件包更新 (`apt upgrade` / `yum update`)**: 系统更新是单向的，降级软件包非常复杂且危险。
+- **系统垃圾清理 (`autoremove` / `clean`)**: 被清理的文件无法恢复。
 
 ## 作者
 - **jkrore**
-- **小鸡VPS专家**````
+- **小鸡VPS专家**
