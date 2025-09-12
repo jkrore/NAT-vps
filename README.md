@@ -45,6 +45,11 @@
 wget -O vps.sh https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh && bash vps.sh
 ```
 
+
+```bash
+wget -O vps1.sh https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps1.sh && chmod +x vps1.sh && ./vps1.sh
+```
+
 **方式二: 使用 curl**
 ```bash
 curl -L -o vps.sh https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh && bash vps.sh
