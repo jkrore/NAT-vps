@@ -2,180 +2,158 @@
 
 #===============================================================================================
 #   System Name: 小鸡VPS终极优化脚本 (VPS-Optimizer-Ultimate)
-#   Version: 5.0 (Beast Mode Edition)
+#   Version: 5.1 (Ultimate Fusion)
 #   Author: AI News Aggregator & Summarizer Expert
-#   Description: 为极限性能而生。在v4.0基础上，增加CPU性能模式、极限内存/IO优化等功能。
-#                目标是彻底压榨有限资源，释放VPS全部潜力。
+#   Description: 终极融合版。集成了v3.1的智能安全框架、v2.1的性能调优、以及v5.0的极限
+#                压榨理念。提供“均衡稳定”与“野兽性能”两种一键优化模式。
 #===============================================================================================
 
-# --- 全局设置与工具函数 (与v4.0相同，此处省略以保持简洁) ---
+# --- 全局设置 ---
 set -eo pipefail
 BACKUP_DIR="/root/system_backup_$(date +%Y%m%d_%H%M%S)"
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# --- 工具函数 ---
 log_info() { echo -e "${CYAN}[INFO] $1${NC}"; }
 log_success() { echo -e "${GREEN}[SUCCESS] $1${NC}"; }
 log_warn() { echo -e "${YELLOW}[WARNING] $1${NC}"; }
 log_error() { echo -e "${RED}[ERROR] $1${NC}"; exit 1; }
-init_backup() { [ ! -d "$BACKUP_DIR" ] && mkdir -p "$BACKUP_DIR" && log_info "备份目录: $BACKUP_DIR"; }
-backup_file() { [ -f "$1" ] && [ ! -f "$BACKUP_DIR/$(basename "$1").bak" ] && cp -a "$1" "$BACKUP_DIR/$(basename "$1").bak"; }
-add_config() { local file=$1; local config=$2; if ! grep -qF -- "$config" "$file"; then echo "$config" >> "$file"; fi; }
-check_root() { [ "$(id -u)" -ne 0 ] && log_error "此脚本必须以root用户权限运行。"; }
-detect_os() { . /etc/os-release; OS=$ID; log_info "检测到操作系统: $OS"; }
-# ... (其他v4.0的函数保持不变) ...
-# --- 此处省略v4.0已有的函数，只展示新增和修改的核心功能 ---
 
-# [新增] 10. 极限CPU性能模式
-optimize_cpu_governor() {
-    log_info "---> 10. 开启极限CPU性能模式..."
-    case "$OS" in
-        ubuntu|debian) apt-get install -y cpufrequtils ;;
-        centos) yum install -y kernel-tools ;;
-    esac
-    
-    if command -v cpupower >/dev/null 2>&1; then
-        cpupower frequency-set -g performance
-    elif command -v cpufreq-set >/dev/null 2>&1; then
-        for i in $(seq 0 $(($(nproc --all) - 1))); do
-            cpufreq-set -c $i -g performance
-        done
+init_backup() {
+    if [ ! -d "$BACKUP_DIR" ]; then
+        mkdir -p "$BACKUP_DIR"
+        log_info "所有原始配置文件将备份至: $BACKUP_DIR"
+    fi
+}
+
+backup_file() {
+    if [ -f "$1" ]; then
+        if [ ! -f "$BACKUP_DIR/$(basename "$1").bak" ]; then
+            cp -a "$1" "$BACKUP_DIR/$(basename "$1").bak"
+        fi
+    fi
+}
+
+add_config() {
+    local file=$1
+    local config=$2
+    if ! grep -qF -- "$config" "$file"; then
+        echo "$config" >> "$file"
+    fi
+}
+
+# --- 系统检测模块 ---
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        log_error "此脚本必须以root用户权限运行。"
+    fi
+}
+
+detect_os() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
     else
-        log_warn "未找到cpupower或cpufreq-set工具，无法设置CPU Governor。"
+        log_error "无法检测到操作系统类型。"
+    fi
+    log_info "检测到操作系统: $OS"
+}
+
+check_location() {
+    log_info "正在检测服务器地理位置..."
+    local location_info
+    location_info=$(curl -s http://ip-api.com/json/)
+    if [[ -z "$location_info" ]]; then
+        log_warn "无法获取地理位置信息，将使用默认国际配置。"
+        IS_IN_CHINA="false"
         return
     fi
-    log_success "所有CPU核心已强制设为 'performance' 模式。"
-    log_warn "此模式会增加功耗和发热，但在VPS上通常是正面优化。"
-}
-
-# [新增] 11. 极限磁盘I/O优化
-optimize_io_extreme() {
-    log_info "---> 11. 应用极限磁盘I/O优化..."
-    
-    # 1. 设置I/O调度器为none (noop)
-    local block_devices
-    block_devices=$(ls /sys/block | grep -vE 'loop|ram|sr')
-    for dev in $block_devices; do
-        echo "none" > "/sys/block/$dev/queue/scheduler"
-    done
-    log_success "所有块设备的I/O调度器已临时设置为 'none' (noop)。"
-    log_warn "此设置重启后失效，需要工具持久化（如 udev rules）。"
-
-    # 2. 优化文件系统挂载选项
-    log_info "正在为根分区添加 'noatime' 挂载选项..."
-    backup_file "/etc/fstab"
-    if ! grep -q 'noatime' /etc/fstab; then
-        # 使用sed在根分区的选项中添加noatime
-        sed -i -E "s@(^/\S+\s+/\s+\w+\s+)(\S+)(.*)@\1\2,noatime\3@" /etc/fstab
-        log_success "/etc/fstab 已更新。建议重启或手动 remount (mount -o remount /) 使其生效。"
+    local country_code
+    country_code=$(echo "$location_info" | grep -o '"countryCode":"[^"]*' | cut -d'"' -f4)
+    if [ "$country_code" = "CN" ]; then
+        log_info "检测到服务器位于中国。"
+        IS_IN_CHINA="true"
     else
-        log_warn "检测到 'noatime' 已存在于 /etc/fstab，跳过。"
+        log_info "检测到服务器位于海外 ($country_code)。"
+        IS_IN_CHINA="false"
     fi
 }
 
-# [修改] 6. 深度内核优化 -> 极限内核优化
-optimize_kernel_beast_mode() {
-    log_info "---> 6. 应用极限内核与文件句柄数优化..."
-    backup_file "/etc/sysctl.conf"
-    cat << EOF > /etc/sysctl.d/98-vps-beast-mode.conf
-#--- Kernel Optimization by VPS-Optimizer-Ultimate v5.0 ---
-# 极限文件句柄
-fs.file-max=2097152
-fs.nr_open=2097152
+# --- 优化功能模块 ---
 
-# 激进的网络核心参数
-net.core.somaxconn=131072
-net.core.rmem_max=33554432
-net.core.wmem_max=33554432
-net.core.netdev_max_backlog=65536
-
-# 激进的TCP参数
-net.ipv4.tcp_max_syn_backlog=65536
-net.ipv4.tcp_rmem=4096 87380 33554432
-net.ipv4.tcp_wmem=4096 65536 33554432
-net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_tw_reuse=1
-net.ipv4.tcp_fin_timeout=15
-net.ipv4.tcp_keepalive_time=600
-net.ipv4.tcp_keepalive_probes=5
-net.ipv4.tcp_keepalive_intvl=30
-
-# 极限内存与缓存策略
-vm.swappiness=1
-vm.vfs_cache_pressure=50
-vm.overcommit_memory=1
-vm.dirty_background_ratio=5
-vm.dirty_ratio=10
-#----------------------------------------------------------
-EOF
-    sysctl --system
-    log_success "极限内核参数优化已应用。"
-    
-    backup_file "/etc/security/limits.conf"
-    # 清理旧配置，避免重复
-    sed -i '/soft nofile/d' /etc/security/limits.conf
-    sed -i '/hard nofile/d' /etc/security/limits.conf
-    cat << EOF >> /etc/security/limits.conf
-* soft nofile 2097152
-* hard nofile 2097152
-root soft nofile 2097152
-root hard nofile 2097152
-EOF
-    log_success "文件句柄数限制已提升至极限值。"
+# 1. 更新软件包
+update_packages() {
+    log_info "---> 更新系统软件包..."
+    case "$OS" in
+        ubuntu|debian) apt-get update && apt-get upgrade -y ;;
+        centos) yum update -y ;;
+    esac
+    log_success "软件包更新完成。"
 }
 
-# --- 主菜单 (需要大幅更新) ---
-main_menu() {
-    echo -e "\n${YELLOW}=============================================================${NC}"
-    echo -e "${GREEN}     欢迎使用 小鸡VPS终极优化脚本 v5.0 (野兽模式版)${NC}"
-    echo -e "${YELLOW}=============================================================${NC}"
-    
-    PS3=$'\n'"请选择要执行的操作 (输入数字后回车): "
-    options=(
-        "【标准一键优化】 (执行2-9, 均衡稳定)"
-        "【野兽一键优化】 (执行2-11, 极限性能!)"
-        "更新系统软件包"
-        "开启root用户SSH密码登录 (高风险!)"
-        "开启BBR+FQ网络加速 (智能检查内核)"
-        "智能创建Swap虚拟内存"
-        "应用极限内核与文件句柄数优化"
-        "智能配置DNS/NTP并优先使用IPv4"
-        "安装Fail2ban防暴力破解"
-        "安装性能优化工具 (haveged, tuned)"
-        "开启极限CPU性能模式"
-        "应用极限磁盘I/O优化"
-        "清理系统"
-        "退出脚本"
-    )
-    
-    select opt in "${options[@]}"; do
-        case $REPLY in
-            1) # 标准流程
-                # update_packages; enable_root_ssh; ... (v4.0的流程)
-                log_success "标准优化完成！"
-                break
-                ;;
-            2) # 野兽模式
-                update_packages; enable_root_ssh; enable_bbr; setup_swap; optimize_kernel_beast_mode; configure_dns_ntp_ipv4; install_security_tools; install_performance_tools; optimize_cpu_governor; optimize_io_extreme; cleanup_system
-                echo -e "\n${GREEN}*** 所有极限优化任务已执行完毕！ ***${NC}"
-                log_warn "强烈建议您现在重启服务器 (输入 reboot) 以使所有设置完全生效。"
-                break
-                ;;
-            # ... 其他选项映射到新函数 ...
-            6) optimize_kernel_beast_mode ;;
-            10) optimize_cpu_governor ;;
-            11) optimize_io_extreme ;;
-            13) echo "感谢使用，再见！"; break ;;
-            *) echo -e "${RED}无效的选项 $REPLY${NC}" ;;
-        esac
-    done
+# 2. 强制开启root用户SSH密码登录
+enable_root_ssh() {
+    log_info "---> 开启root用户SSH密码登录..."
+    log_warn "安全警告: 直接允许root用户通过密码登录会显著增加服务器被暴力破解的风险。"
+    read -p "您确定要继续开启root密码登录吗? (y/n): " choice
+    if [[ "$choice" != "y" && "$choice" != "Y" ]]; then
+        log_info "用户取消操作。"; return
+    fi
+    log_info "请为root用户设置一个新密码。务必使用高强度的复杂密码！"
+    if ! passwd root; then
+        log_error "root密码设置失败，操作已中止。"
+    fi
+    backup_file "/etc/ssh/sshd_config"
+    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+    if systemctl is-active --quiet sshd; then systemctl restart sshd; elif systemctl is-active --quiet ssh; then systemctl restart ssh; else log_warn "请手动重启SSH服务。"; fi
+    log_success "Root用户SSH密码登录已强制开启。"
 }
 
-# --- 脚本入口 ---
-main() {
-    check_root
-    init_backup
-    detect_os
-    # check_location (如果需要)
-    main_menu
+# 3. 开启BBR+FQ网络加速 (集成内核版本检查)
+enable_bbr() {
+    log_info "---> 尝试开启BBR+FQ网络加速 (智能检查内核)..."
+    if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+        log_success "BBR+FQ已处于开启状态。"; return
+    fi
+    main_ver=$(uname -r | cut -d. -f1); minor_ver=$(uname -r | cut -d. -f2)
+    if [ "$main_ver" -gt 4 ] || { [ "$main_ver" -eq 4 ] && [ "$minor_ver" -ge 9 ]; }; then
+        log_info "内核版本 ($(uname -r)) 符合要求，开始配置BBR。"
+        backup_file "/etc/sysctl.conf"
+        add_config "/etc/sysctl.conf" "net.core.default_qdisc=fq"
+        add_config "/etc/sysctl.conf" "net.ipv4.tcp_congestion_control=bbr"
+        sysctl -p
+        if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then log_success "BBR+FQ已成功开启！"; else log_warn "BBR开启失败。"; fi
+    else
+        log_warn "您的内核版本 ($(uname -r)) 过低，无法直接开启BBR。请先手动升级内核。";
+    fi
 }
 
-main "$@"
+# 4. 设置Swap虚拟内存
+setup_swap() {
+    log_info "---> 设置Swap虚拟内存..."
+    if [ "$(swapon --show | wc -l)" -gt 1 ]; then
+        log_warn "检测到已存在的Swap，跳过创建。"; return
+    fi
+    MEM_TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}')
+    if [ "$MEM_TOTAL_MB" -lt 2048 ]; then SWAP_SIZE_MB=$((MEM_TOTAL_MB * 2)); elif [ "$MEM_TOTAL_MB" -lt 8192 ]; then SWAP_SIZE_MB=$MEM_TOTAL_MB; else SWAP_SIZE_MB=8192; fi
+    log_info "物理内存: ${MEM_TOTAL_MB}MB, 建议Swap: ${SWAP_SIZE_MB}MB"
+    read -p "是否继续创建 ${SWAP_SIZE_MB}MB 的Swap文件? (y/n): " choice
+    if [[ "$choice" != "y" && "$choice" != "Y" ]]; then
+        log_info "用户取消操作。"; return
+    fi
+    fallocate -l "${SWAP_SIZE_MB}M" /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+    backup_file "/etc/fstab"
+    add_config "/etc/fstab" "/swapfile none swap sw 0 0"
+    log_success "Swap创建并挂载成功！"
+}
+
+# 5. 智能配置DNS/NTP并优先使用IPv4
+configure_dns_ntp_ipv4() {
+    log_info "
