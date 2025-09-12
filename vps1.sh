@@ -2,16 +2,18 @@
 
 #===============================================================================================
 #   System Name: 小鸡VPS终极优化脚本 (VPS-Optimizer-Ultimate)
-#   Version: 8.0 (Final Synthesis Edition)
+#   Version: 10.0 (Absolute Edition)
 #   Author: AI News Aggregator & Summarizer Expert
-#   Description: 最终合成版。融合了v7.0的极限性能框架，并吸收了SKY-BOX和taurusxin脚本
-#                在DNS/NTP、内核参数全面性、配置持久化等方面的全部优点。
-#                这是我们追求极致性能之旅的最终章。
+#   Description: 绝对版。v8.0的智能框架与v9.0的魔鬼核心的终极融合。
+#                在保留地理位置识别、智能DNS/NTP、交互式Swap等便利功能的同时，
+#                集成了禁用CPU漏洞补丁、禁用THP、忙轮询等所有已知的极限性能优化。
+#                这是操作系统层面性能压榨的最终形态。
 #
-#   !!! 极度危险警告 !!!
-#   此脚本会进行非常规且激进的系统修改，可能导致系统不稳定、数据丢失或无法启动。
-#   仅用于测试环境或您完全了解其后果的场景。
-#   在生产环境中使用前，必须、必须、必须进行完整备份！
+#   !!! 终极危险警告 - 魔鬼协议 !!!
+#   1. 此脚本会禁用CPU硬件漏洞补丁(Meltdown/Spectre)，使您的系统完全暴露于严重安全风险之下。
+#   2. 激进的内存和调度器策略可能导致系统在特定负载下频繁崩溃或无响应。
+#   3. 此脚本为终极性能实验而生，绝对、绝对、绝对不能用于任何生产环境或存有重要数据的机器。
+#   4. 您必须完全理解每一项操作的后果，并自愿承担包括但不限于数据丢失、系统损坏、安全入侵等所有风险。
 #===============================================================================================
 
 # --- 全局设置与工具函数 ---
@@ -26,9 +28,9 @@ add_config() { local file=$1; local config=$2; if ! grep -qF -- "$config" "$file
 
 # --- 核心函数 ---
 
-# 0. 初始化与环境检查
+# 0. 初始化与签订魔鬼协议
 initialize_environment() {
-    log_info "Step 0: 初始化环境与安全检查"
+    log_info "Step 0: 初始化环境与签订魔鬼协议"
     if [ "$(id -u)" -ne 0 ]; then log_error "此脚本必须以root用户权限运行。"; fi
     mkdir -p "$BACKUP_DIR"; log_success "所有原始配置文件将备份至: $BACKUP_DIR"
     if [ -f /etc/os-release ]; then . /etc/os-release; OS=$ID; else log_error "无法检测到操作系统类型。"; fi
@@ -38,13 +40,25 @@ initialize_environment() {
     local location_info; location_info=$(curl -s http://ip-api.com/json/)
     if [[ -z "$location_info" ]]; then log_warn "无法获取地理位置信息，将使用默认国际配置。"; IS_IN_CHINA="false"; else local country_code; country_code=$(echo "$location_info" | grep -o '"countryCode":"[^"]*' | cut -d'"' -f4); if [ "$country_code" = "CN" ]; then log_success "检测到服务器位于中国。"; IS_IN_CHINA="true"; else log_success "检测到服务器位于海外 ($country_code)。"; IS_IN_CHINA="false"; fi; fi
     
-    read -p "您已阅读顶部的极度危险警告，并愿意承担所有风险吗? (输入 'yes' 继续): " confirmation
-    if [[ "$confirmation" != "yes" ]]; then log_error "用户取消操作。脚本已中止。"; fi
+    log_warn "您即将签订一份魔鬼协议，以安全和稳定换取极致性能。"
+    read -p "您是否已阅读脚本顶部的终极危险警告，并自愿承担所有风险? (请输入 'I_am_fully_aware_of_the_risks' 继续): " confirmation
+    if [[ "$confirmation" != "I_am_fully_aware_of_the_risks" ]]; then log_error "协议未签订。为了您的安全，脚本已中止。"; fi
 }
 
-# 1. 更新软件包并安装核心工具
+# 1. [魔鬼级] 禁用CPU漏洞补丁
+disable_cpu_mitigations() {
+    log_info "Step 1: [魔鬼级] 禁用CPU漏洞补丁以恢复原始性能"
+    if [ ! -f /etc/default/grub ]; then log_warn "/etc/default/grub 文件不存在，跳过此步骤。"; return; fi
+    cp -a /etc/default/grub "$BACKUP_DIR/grub.bak"
+    sed -i 's/mitigations=[^ ]*//g' /etc/default/grub
+    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 mitigations=off"/g' /etc/default/grub
+    if command -v update-grub >/dev/null 2>&1; then update-grub; elif command -v grub2-mkconfig >/dev/null 2>&1; then grub2-mkconfig -o /boot/grub2/grub.cfg; else log_warn "请手动更新GRUB配置。"; fi
+    log_success "CPU漏洞补丁已被禁用。重启后生效，性能将大幅提升，但安全风险极高。"
+}
+
+# 2. 更新软件包并安装核心工具
 install_core_tools() {
-    log_info "Step 1: 更新软件包并安装核心工具 (chrony, fail2ban, haveged...)"
+    log_info "Step 2: 更新软件包并安装核心工具"
     case "$OS" in
         ubuntu|debian) apt-get update && apt-get upgrade -y && apt-get install -y curl chrony fail2ban haveged cpufrequtils ;;
         centos) yum update -y && yum install -y epel-release && yum install -y curl chrony fail2ban haveged kernel-tools ;;
@@ -52,58 +66,52 @@ install_core_tools() {
     log_success "核心工具安装与系统更新完成。"
 }
 
-# 2. [融合] 智能创建Swap + 配置最低延迟DNS/NTP
-configure_basics() {
-    log_info "Step 2: 智能创建Swap并配置最低延迟DNS/NTP"
-    # 创建Swap
-    if [ "$(swapon --show | wc -l)" -le 1 ]; then local MEM_TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}'); local SWAP_SIZE_MB=$((MEM_TOTAL_MB * 2)); log_info "物理内存: ${MEM_TOTAL_MB}MB, 计划创建Swap: ${SWAP_SIZE_MB}MB"; read -p "是否创建Swap文件? (y/n): " choice; if [[ "$choice" == "y" || "$choice" == "Y" ]]; then cp -a /etc/fstab "$BACKUP_DIR/fstab.swap.bak"; fallocate -l "${SWAP_SIZE_MB}M" /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile; add_config "/etc/fstab" "/swapfile none swap sw 0 0"; log_success "Swap创建成功！"; fi; else log_warn "检测到已存在的Swap，跳过创建。"; fi
+# 3. [智能] 创建Swap并配置DNS/NTP
+configure_basics_intelligent() {
+    log_info "Step 3: [智能] 创建Swap并配置最低延迟DNS/NTP"
+    # 交互式创建Swap
+    if [ "$(swapon --show | wc -l)" -le 1 ]; then local MEM_TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}'); local SWAP_SIZE_MB=$((MEM_TOTAL_MB * 2)); log_info "物理内存: ${MEM_TOTAL_MB}MB, 计划创建Swap: ${SWAP_SIZE_MB}MB"; read -p "是否创建Swap文件作为安全网? (y/n): " choice; if [[ "$choice" == "y" || "$choice" == "Y" ]]; then cp -a /etc/fstab "$BACKUP_DIR/fstab.swap.bak"; fallocate -l "${SWAP_SIZE_MB}M" /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile; add_config "/etc/fstab" "/swapfile none swap sw 0 0"; log_success "Swap创建成功！"; fi; else log_warn "检测到已存在的Swap，跳过创建。"; fi
     
-    # 配置DNS
+    # 智能配置DNS
     cp -a /etc/resolv.conf "$BACKUP_DIR/resolv.conf.bak"; chattr -i /etc/resolv.conf 2>/dev/null || true
     if [ "$IS_IN_CHINA" = "true" ]; then echo -e "options timeout:1 attempts:2 rotate\nnameserver 223.5.5.5\nnameserver 119.29.29.29\nnameserver 180.76.76.76" > /etc/resolv.conf; log_success "已配置国内DNS。"; else echo -e "options timeout:1 attempts:2 rotate\nnameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9" > /etc/resolv.conf; log_success "已配置国际DNS。"; fi
     chattr +i /etc/resolv.conf 2>/dev/null || true
     
-    # 配置NTP (chrony)
+    # 智能配置NTP (chrony)
     cp -a /etc/chrony/chrony.conf "$BACKUP_DIR/chrony.conf.bak" 2>/dev/null || cp -a /etc/chrony.conf "$BACKUP_DIR/chrony.conf.bak" 2>/dev/null || true
     if [ "$IS_IN_CHINA" = "true" ]; then echo -e "server ntp.aliyun.com iburst\nserver ntp.tencent.com iburst\ndriftfile /var/lib/chrony/drift\nmakestep 1.0 3\nrtcsync" > /etc/chrony/chrony.conf; else echo -e "pool pool.ntp.org iburst\npool time.google.com iburst\ndriftfile /var/lib/chrony/drift\nmakestep 1.0 3\nrtcsync" > /etc/chrony/chrony.conf; fi
-    systemctl enable --now chronyd 2>/dev/null || systemctl enable --now chrony 2>/dev/null; log_success "已使用chrony配置NTP时间同步。"
+    systemctl enable --now chronyd 2>/dev/null || systemctl enable --now chrony 2>/dev/null; log_success "已使用chrony智能配置NTP时间同步。"
 }
 
-# 3. [融合] 极限内核与系统限制优化
-optimize_kernel_and_limits() {
-    log_info "Step 3: 应用极限内核与系统限制优化 (融合版)"
+# 4. [终极] 内核与系统限制优化
+optimize_kernel_and_limits_final() {
+    log_info "Step 4: 应用终极内核与系统限制优化"
     # 开启BBR
     if ! sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then main_ver=$(uname -r | cut -d. -f1); if [ "$main_ver" -ge 5 ]; then add_config "/etc/sysctl.conf" "net.ipv4.tcp_congestion_control=bbr2"; else add_config "/etc/sysctl.conf" "net.ipv4.tcp_congestion_control=bbr"; fi; add_config "/etc/sysctl.conf" "net.core.default_qdisc=fq"; fi
     
-    # 写入极限内核参数
+    # 写入终极内核参数
     cp -a /etc/sysctl.conf "$BACKUP_DIR/sysctl.conf.bak"
-    cat << EOF > /etc/sysctl.d/97-vps-final-synthesis.conf
-#--- Kernel Optimization by VPS-Optimizer v8.0 (Final Synthesis) ---
-# 文件句柄与inotify
-fs.file-max=5120000; fs.nr_open=5120000; fs.inotify.max_user_instances=8192; fs.inotify.max_user_watches=524288
-# 极限网络核心参数
-net.core.somaxconn=131072; net.core.rmem_max=67108864; net.core.wmem_max=67108864; net.core.netdev_max_backlog=131072
-# 激进TCP参数
-net.ipv4.tcp_max_syn_backlog=131072; net.ipv4.tcp_rmem=4096 87380 67108864; net.ipv4.tcp_wmem=4096 65536 67108864
+    cat << EOF > /etc/sysctl.d/95-vps-absolute-edition.conf
+#--- Kernel Optimization by VPS-Optimizer v10.0 (Absolute Edition) ---
+fs.file-max=10240000; fs.nr_open=10240000; fs.inotify.max_user_instances=8192; fs.inotify.max_user_watches=524288
+net.core.somaxconn=262144; net.core.rmem_max=134217728; net.core.wmem_max=134217728; net.core.netdev_max_backlog=262144
+net.ipv4.tcp_max_syn_backlog=262144; net.ipv4.tcp_rmem=4096 87380 134217728; net.ipv4.tcp_wmem=4096 65536 134217728
 net.ipv4.tcp_syncookies=1; net.ipv4.tcp_fastopen=3; net.ipv4.tcp_tw_reuse=1; net.ipv4.tcp_fin_timeout=10; net.ipv4.tcp_mtu_probing=1
-# 极限内存与缓存策略
-vm.swappiness=1; vm.vfs_cache_pressure=50; vm.overcommit_memory=1; vm.min_free_kbytes=65536
-# IPv4优先
-precedence ::ffff:0:0/96  100
+vm.swappiness=0; vm.vfs_cache_pressure=50; vm.overcommit_memory=1; vm.min_free_kbytes=65536
+net.core.busy_poll=50
 EOF
-    # 补充gai.conf
     add_config "/etc/gai.conf" "precedence ::ffff:0:0/96  100"
-    sysctl --system; log_success "极限内核参数已应用。"
+    sysctl --system; log_success "终极内核参数已应用。"
     
     # 写入极限系统限制
     cp -a /etc/security/limits.conf "$BACKUP_DIR/limits.conf.bak"
-    echo -e "* soft nofile 5120000\n* hard nofile 5120000\nroot soft nofile 5120000\nroot hard nofile 5120000" > /etc/security/limits.conf
-    log_success "文件句柄数限制已提升至极限值。"
+    echo -e "* soft nofile 10240000\n* hard nofile 10240000\nroot soft nofile 10240000\nroot hard nofile 10240000" > /etc/security/limits.conf
+    log_success "文件句柄数限制已提升至终极值。"
 }
 
-# 4. [融合] 极限硬件性能优化 (CPU/IO/IRQ)
-optimize_hardware_performance() {
-    log_info "Step 4: 应用极限硬件性能优化 (CPU/IO/IRQ)"
+# 5. [终极] 硬件性能优化 (CPU/IO/IRQ/THP)
+optimize_hardware_performance_final() {
+    log_info "Step 5: 应用终极硬件性能优化 (CPU/IO/IRQ/THP)"
     # CPU Governor
     if command -v cpupower >/dev/null 2>&1 && cpupower frequency-info | grep -q "performance"; then cpupower frequency-set -g performance; log_success "CPU已设为 'performance' 模式。"; else log_warn "未找到CPU调速工具或不支持。"; fi
     # IO Scheduler
@@ -115,15 +123,19 @@ EOF
     if ! grep -q 'noatime' /etc/fstab; then cp -a /etc/fstab "$BACKUP_DIR/fstab.io.bak"; sed -i -E "s@(^/\S+\s+/\s+\w+\s+)(\S+)(.*)@\1\2,noatime,nodiratime\3@" /etc/fstab; log_success "/etc/fstab 已添加 'noatime'。"; fi
     # IRQ Affinity
     local cpu_count=$(nproc); if [ "$cpu_count" -gt 1 ]; then local eth_device=$(ip route | grep '^default' | awk '{print $5}' | head -1); if [ -n "$eth_device" ]; then local irq_list=$(grep "$eth_device" /proc/interrupts | awk '{print $1}' | tr -d ':'); if [ -n "$irq_list" ]; then local i=0; for irq in $irq_list; do echo $(printf "%x" $((1 << (i % cpu_count)))) > "/proc/irq/$irq/smp_affinity"; i=$((i + 1)); done; log_success "网络中断(IRQ)已尝试绑定到多核CPU。"; fi; fi; fi
+    # 禁用透明大页 (THP)
+    echo never > /sys/kernel/mm/transparent_hugepage/enabled; echo never > /sys/kernel/mm/transparent_hugepage/defrag; log_success "透明大页(THP)已被临时禁用。"
 }
 
-# 5. [融合] 系统服务配置与清理
-configure_services_and_cleanup() {
-    log_info "Step 5: 配置系统服务、持久化并清理系统"
-    # 配置rc.local
+# 6. [终极] 系统服务配置与清理
+configure_services_and_cleanup_final() {
+    log_info "Step 6: 配置系统服务、持久化并清理系统"
+    # 配置rc.local (增加禁用THP)
     cat << EOF > /etc/rc.local
 #!/bin/bash
 sysctl -p >/dev/null 2>&1
+echo never > /sys/kernel/mm/transparent_hugepage/enabled
+echo never > /sys/kernel/mm/transparent_hugepage/defrag
 exit 0
 EOF
     chmod +x /etc/rc.local
@@ -136,7 +148,7 @@ ExecStart=/etc/rc.local start
 WantedBy=multi-user.target
 EOF
     fi
-    systemctl enable rc-local.service; log_success "rc.local持久化已配置。"
+    systemctl enable rc-local.service; log_success "rc.local持久化已配置 (含禁用THP)。"
     
     # 启用核心服务
     systemctl enable --now fail2ban; log_success "Fail2ban已启动。"
@@ -151,16 +163,18 @@ EOF
 # --- 主执行流程 ---
 main() {
     initialize_environment
+    disable_cpu_mitigations
     install_core_tools
-    configure_basics
-    optimize_kernel_and_limits
-    optimize_hardware_performance
-    configure_services_and_cleanup
+    configure_basics_intelligent
+    optimize_kernel_and_limits_final
+    optimize_hardware_performance_final
+    configure_services_and_cleanup_final
     
     echo -e "\n${GREEN}=============================================================${NC}"
-    echo -e "${GREEN}      🚀 Final Synthesis 优化已全部执行完毕! 🚀${NC}"
+    echo -e "${GREEN}      🚀 Absolute Edition 优化已全部执行完毕! 🚀${NC}"
     echo -e "${YELLOW}=============================================================${NC}"
-    log_warn "系统已进入极限性能模式。强烈建议您立即重启 (reboot)!"
+    log_warn "系统已进入终极性能模式。所有优化将在重启后完全生效。"
+    log_warn "请立即重启 (reboot) 以激活所有设置，包括CPU漏洞补丁禁用。"
     log_warn "重启后，请务必全面测试您的应用程序以确保其稳定性。"
 }
 
