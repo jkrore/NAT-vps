@@ -2,43 +2,42 @@
 
 #===============================================================================================
 #   System Name: 小鸡VPS终极优化脚本 (VPS-Optimizer-Ultimate)
-#   Version: 1.0
-#   Author: 小鸡VPS专家
-#   Description: 专为低配置VPS设计的一键自动化优化脚本，集成了系统更新、安全设置、
-#                网络加速、性能调优等多项功能。
+#   Version: 3.1 (Customized Edition)
+#   Author: AI News Aggregator & Summarizer Expert
+#   Description: 根据用户需求定制，保留“强制开启root密码登录”功能。
+#                融合了交互性与智能化的一键优化脚本。
 #===============================================================================================
+
+# --- 全局设置 ---
+set -eo pipefail
+BACKUP_DIR="/root/system_backup_$(date +%Y%m%d_%H%M%S)"
 
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-# 检查是否为root用户
-check_root() {
-    if [ "$(id -u)" -ne 0 ]; then
-        echo -e "${RED}错误: 此脚本必须以root用户权限运行。${NC}"
-        echo -e "${YELLOW}请尝试使用 'sudo -i' 或 'sudo su' 命令切换到root用户后再次运行。${NC}"
-        exit 1
+# --- 工具函数 ---
+log_info() { echo -e "${CYAN}[INFO] $1${NC}"; }
+log_success() { echo -e "${GREEN}[SUCCESS] $1${NC}"; }
+log_warn() { echo -e "${YELLOW}[WARNING] $1${NC}"; }
+log_error() { echo -e "${RED}[ERROR] $1${NC}"; exit 1; }
+
+init_backup() {
+    if [ ! -d "$BACKUP_DIR" ]; then
+        mkdir -p "$BACKUP_DIR"
+        log_info "所有原始配置文件将备份至: $BACKUP_DIR"
     fi
 }
 
-# 检测操作系统
-detect_os() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS=$ID
-    elif type lsb_release >/dev/null 2>&1; then
-        OS=$(lsb_release -si | tr '[:upper:]' '[:lower:]')
-    elif [ -f /etc/redhat-release ]; then
-        OS="centos"
-    else
-        echo -e "${RED}无法检测到操作系统类型。${NC}"
-        exit 1
+backup_file() {
+    if [ -f "$1" ]; then
+        cp -a "$1" "$BACKUP_DIR/$(basename "$1").bak"
     fi
 }
 
-# 封装一个函数来安全地添加配置 (幂等性检查)
 add_config() {
     local file=$1
     local config=$2
@@ -47,180 +46,267 @@ add_config() {
     fi
 }
 
-# 1. 更新软件包
-update_packages() {
-    echo -e "\n${GREEN}---> 1. 开始更新系统软件包...${NC}"
-    case "$OS" in
-        ubuntu|debian)
-            apt-get update && apt-get upgrade -y
-            ;;
-        centos)
-            yum update -y
-            ;;
-    esac
-    echo -e "${GREEN}软件包更新完成。${NC}"
+# --- 系统检测模块 ---
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        log_error "此脚本必须以root用户权限运行。"
+    fi
 }
 
-# 2. 开启root用户SSH登录
-enable_root_ssh() {
-    echo -e "\n${GREEN}---> 2. 设置并开启root用户SSH登录...${NC}"
-    echo -e "${YELLOW}您现在需要为root用户设置一个新密码。请务必使用强密码！${NC}"
-    passwd root
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}密码设置失败，跳过此步骤。${NC}"
-        return 1
+detect_os() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
+    elif type lsb_release >/dev/null 2>&1; then
+        OS=$(lsb_release -si | tr '[:upper:]' '[:lower:]')
+    else
+        log_error "无法检测到操作系统类型。"
     fi
-    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
-    systemctl restart sshd
-    echo -e "${GREEN}Root用户SSH登录已开启。${NC}"
+    log_info "检测到操作系统: $OS"
 }
+
+check_location() {
+    log_info "正在检测服务器地理位置..."
+    local location_info
+    location_info=$(curl -s http://ip-api.com/json/)
+    if [[ -z "$location_info" ]]; then
+        log_warn "无法获取地理位置信息，将使用默认国际配置。"
+        IS_IN_CHINA="false"
+        return
+    fi
+    local country_code
+    country_code=$(echo "$location_info" | grep -o '"countryCode":"[^"]*' | cut -d'"' -f4)
+    if [ "$country_code" = "CN" ]; then
+        log_info "检测到服务器位于中国。"
+        IS_IN_CHINA="true"
+    else
+        log_info "检测到服务器位于海外 ($country_code)。"
+        IS_IN_CHINA="false"
+    fi
+}
+
+# --- 优化功能模块 ---
+
+# 1. 更新软件包
+update_packages() {
+    log_info "---> 1. 更新系统软件包..."
+    case "$OS" in
+        ubuntu|debian) apt-get update && apt-get upgrade -y ;;
+        centos) yum update -y ;;
+    esac
+    log_success "软件包更新完成。"
+}
+
+# 2. 强制开启root用户SSH密码登录 (按用户要求)
+enable_root_ssh() {
+    log_info "---> 2. 开启root用户SSH密码登录..."
+    log_warn "安全警告: 直接允许root用户通过密码登录会显著增加服务器被暴力破解的风险。"
+    log_warn "强烈建议您在日常管理中使用普通用户+sudo，并配置SSH密钥登录作为替代。"
+    
+    read -p "您确定要继续开启root密码登录吗? (y/n): " choice
+    if [[ "$choice" != "y" && "$choice" != "Y" ]]; then
+        log_info "用户取消操作。"
+        return
+    fi
+
+    log_info "请为root用户设置一个新密码。务必使用高强度的复杂密码！"
+    if ! passwd root; then
+        log_error "root密码设置失败，操作已中止。"
+    fi
+    
+    backup_file "/etc/ssh/sshd_config"
+    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+    
+    # 兼容不同的SSH服务名
+    if systemctl is-active --quiet sshd; then
+        systemctl restart sshd
+    elif systemctl is-active --quiet ssh; then
+        systemctl restart ssh
+    else
+        log_warn "无法确定SSH服务名称 (sshd/ssh)，请手动重启。"
+    fi
+    
+    log_success "Root用户SSH密码登录已强制开启。"
+}
+
 
 # 3. 开启BBR+FQ网络加速
 enable_bbr() {
-    echo -e "\n${GREEN}---> 3. 尝试开启BBR+FQ网络加速...${NC}"
-    KERNEL_VERSION=$(uname -r | cut -d- -f1)
-    if dpkg --compare-versions "$KERNEL_VERSION" "ge" "4.9"; then
-        echo -e "${GREEN}内核版本 ($KERNEL_VERSION) 符合要求，开始配置BBR。${NC}"
-        add_config "/etc/sysctl.conf" "net.core.default_qdisc=fq"
-        add_config "/etc/sysctl.conf" "net.ipv4.tcp_congestion_control=bbr"
-        sysctl -p
-        if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
-            echo -e "${GREEN}BBR+FQ已成功开启！${NC}"
-        else
-            echo -e "${RED}BBR开启失败，请检查配置。${NC}"
-        fi
+    log_info "---> 3. 尝试开启BBR+FQ网络加速..."
+    if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+        log_success "BBR+FQ已处于开启状态。"
+        return
+    fi
+    backup_file "/etc/sysctl.conf"
+    add_config "/etc/sysctl.conf" "net.core.default_qdisc=fq"
+    add_config "/etc/sysctl.conf" "net.ipv4.tcp_congestion_control=bbr"
+    sysctl -p
+    if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+        log_success "BBR+FQ已成功开启！"
     else
-        echo -e "${YELLOW}警告: 您的内核版本 ($KERNEL_VERSION) 过低，无法直接开启BBR。${NC}"
+        log_warn "BBR开启失败，可能是内核版本过低或不受支持。"
     fi
 }
 
 # 4. 设置Swap虚拟内存
 setup_swap() {
-    echo -e "\n${GREEN}---> 4. 设置Swap虚拟内存...${NC}"
-    if [ "$(swapon --show | wc -l)" -gt 0 ]; then
-        echo -e "${YELLOW}检测到已存在的Swap，跳过创建。${NC}"
+    log_info "---> 4. 设置Swap虚拟内存..."
+    if [ "$(swapon --show | wc -l)" -gt 1 ]; then
+        log_warn "检测到已存在的Swap，跳过创建。"
         return
     fi
-    MEM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
-    SWAP_SIZE=$((MEM_TOTAL * 2))
-    echo "物理内存: ${MEM_TOTAL}MB, 计划创建Swap: ${SWAP_SIZE}MB"
-    fallocate -l ${SWAP_SIZE}M /swapfile
+    MEM_TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}')
+    if [ "$MEM_TOTAL_MB" -lt 2048 ]; then
+        SWAP_SIZE_MB=$((MEM_TOTAL_MB * 2))
+    elif [ "$MEM_TOTAL_MB" -lt 8192 ]; then
+        SWAP_SIZE_MB=$MEM_TOTAL_MB
+    else
+        SWAP_SIZE_MB=8192
+    fi
+    DISK_FREE_GB=$(df -h / | awk 'NR==2 {print $4}')
+    log_info "物理内存: ${MEM_TOTAL_MB}MB, 建议Swap: ${SWAP_SIZE_MB}MB, 磁盘剩余空间: ${DISK_FREE_GB}"
+    read -p "是否继续创建 ${SWAP_SIZE_MB}MB 的Swap文件? (y/n): " choice
+    if [[ "$choice" != "y" && "$choice" != "Y" ]]; then
+        log_info "用户取消操作。"
+        return
+    fi
+    fallocate -l "${SWAP_SIZE_MB}M" /swapfile
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile
+    backup_file "/etc/fstab"
     add_config "/etc/fstab" "/swapfile none swap sw 0 0"
-    echo -e "${GREEN}Swap创建并挂载成功！${NC}"
+    log_success "Swap创建并挂载成功！"
 }
 
-# 5. 清理系统垃圾
-cleanup_system() {
-    echo -e "\n${GREEN}---> 5. 清理系统垃圾文件...${NC}"
-    case "$OS" in
-        ubuntu|debian)
-            apt-get autoremove -y && apt-get clean -y
-            ;;
-        centos)
-            yum autoremove -y && yum clean all
-            ;;
-    esac
-    journalctl --vacuum-size=50M
-    echo -e "${GREEN}系统垃圾清理完成。${NC}"
-}
-
-# 6. 优化DNS并强制IPv4优先
-optimize_dns_ipv4() {
-    echo -e "\n${GREEN}---> 6. 优化DNS并强制IPv4优先...${NC}"
-    echo -e "nameserver 8.8.8.8\nnameserver 1.1.1.1" > /etc/resolv.conf
-    echo -e "${GREEN}DNS已设置为Google和Cloudflare DNS。${NC}"
-    add_config "/etc/gai.conf" "precedence ::ffff:0:0/96  100"
-    echo -e "${GREEN}已配置IPv4优先访问。${NC}"
-}
-
-# 7. 内核参数优化
-optimize_sysctl() {
-    echo -e "\n${GREEN}---> 7. 应用Linux系统内核参数优化...${NC}"
-    cat << EOF | while read -r line; do add_config "/etc/sysctl.conf" "$line"; done
-#--- Kernel Optimization by VPS-Optimizer-Ultimate v2.1 ---
-fs.file-max=1000000
-fs.nr_open=1000000
-net.core.rmem_max=16777216
-net.core.wmem_max=16777216
-net.core.somaxconn=8192
-net.ipv4.tcp_rmem=4096 87380 16777216
-net.ipv4.tcp_wmem=4096 65536 16777216
-net.ipv4.tcp_max_syn_backlog=8192
-net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_tw_reuse=1
-net.ipv4.tcp_fin_timeout=30
-vm.swappiness=10
-#----------------------------------------------------------
+# 5. 智能配置DNS和NTP
+configure_dns_ntp() {
+    log_info "---> 5. 智能配置DNS和NTP..."
+    backup_file "/etc/resolv.conf"
+    chattr -i /etc/resolv.conf 2>/dev/null || true
+    if [ "$IS_IN_CHINA" = "true" ]; then
+        cat > /etc/resolv.conf << EOF
+nameserver 223.5.5.5
+nameserver 119.29.29.29
 EOF
-    sysctl -p
-    echo -e "${GREEN}内核参数优化已应用。${NC}"
-}
-
-# 8. 安装性能优化工具
-install_performance_tools() {
-    echo -e "\n${GREEN}---> 8. 安装性能优化辅助工具...${NC}"
+        log_info "已配置国内DNS (AliDNS, DNSPod)。"
+    else
+        cat > /etc/resolv.conf << EOF
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+EOF
+        log_info "已配置国际DNS (Cloudflare, Google)。"
+    fi
+    chattr +i /etc/resolv.conf 2>/dev/null || true
     case "$OS" in
-        ubuntu|debian)
-            apt-get install -y haveged
-            ;;
-        centos)
-            yum install -y haveged tuned
-            systemctl enable --now tuned
-            tuned-adm profile virtual-guest
-            ;;
+        ubuntu|debian) apt-get install -y ntpdate ;;
+        centos) yum install -y ntpdate ;;
     esac
-    systemctl enable --now haveged
-    echo -e "${GREEN}Haveged (熵生成器) 已安装并启动。${NC}"
-    if [ "$OS" == "centos" ]; then
-        echo -e "${GREEN}Tuned (性能调优工具) 已安装并设置为 'virtual-guest' 模式。${NC}"
+    if [ "$IS_IN_CHINA" = "true" ]; then
+        ntpdate ntp.aliyun.com
+        log_info "已使用阿里NTP服务器同步时间。"
+    else
+        ntpdate pool.ntp.org
+        log_info "已使用国际NTP服务器池同步时间。"
     fi
 }
 
-# 主函数
-main() {
-    check_root
-    detect_os
-    echo -e "${YELLOW}=============================================================${NC}"
-    echo -e "${GREEN}       欢迎使用 小鸡VPS终极优化脚本 v2.1 (精简版)${NC}"
+# 6. 内核与文件句柄数优化
+optimize_kernel() {
+    log_info "---> 6. 应用内核与文件句柄数优化..."
+    backup_file "/etc/sysctl.conf"
+    cat << EOF > /etc/sysctl.d/99-vps-optimize.conf
+fs.file-max=1048576
+fs.nr_open=1048576
+net.core.somaxconn=65535
+net.ipv4.tcp_max_syn_backlog=65535
+net.ipv4.tcp_tw_reuse=1
+vm.swappiness=10
+EOF
+    sysctl --system
+    log_success "内核参数优化已应用。"
+    backup_file "/etc/security/limits.conf"
+    cat << EOF >> /etc/security/limits.conf
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+EOF
+    log_success "文件句柄数限制已提升。"
+}
+
+# 7. 安装基础安全工具 (Fail2ban)
+install_security_tools() {
+    log_info "---> 7. 安装基础安全工具 (Fail2ban)..."
+    case "$OS" in
+        ubuntu|debian) apt-get install -y fail2ban ;;
+        centos) yum install -y epel-release && yum install -y fail2ban ;;
+    esac
+    systemctl enable --now fail2ban
+    log_success "Fail2ban已安装并启动，为SSH提供基础防护。"
+}
+
+# 8. 清理系统
+cleanup_system() {
+    log_info "---> 8. 清理系统..."
+    case "$OS" in
+        ubuntu|debian) apt-get autoremove -y && apt-get clean -y ;;
+        centos) yum autoremove -y && yum clean all ;;
+    esac
+    journalctl --vacuum-size=50M
+    log_success "系统垃圾清理完成。"
+}
+
+# --- 主菜单 ---
+main_menu() {
+    echo -e "\n${YELLOW}=============================================================${NC}"
+    echo -e "${GREEN}     欢迎使用 小鸡VPS终极优化脚本 v3.1 (定制版)${NC}"
     echo -e "${YELLOW}=============================================================${NC}"
     
     PS3=$'\n'"请选择要执行的操作 (输入数字后回车): "
     options=(
-        "【推荐】一键全自动优化 (执行1-8全部步骤)"
+        "【一键全自动优化】 (推荐, 执行2-8)"
         "更新系统软件包"
-        "开启root用户SSH登录"
+        "开启root用户SSH密码登录 (高风险!)"
         "开启BBR+FQ网络加速"
-        "创建2倍内存的Swap"
-        "清理系统垃圾文件"
-        "优化DNS并强制IPv4优先"
-        "应用Linux内核参数优化"
-        "安装性能优化工具 (haveged/tuned)"
+        "智能创建Swap虚拟内存"
+        "智能配置DNS和NTP"
+        "内核与文件句柄数优化"
+        "安装Fail2ban防暴力破解"
+        "清理系统"
         "退出脚本"
     )
     
     select opt in "${options[@]}"; do
         case $REPLY in
             1)
-                update_packages; enable_root_ssh; enable_bbr; setup_swap; cleanup_system; optimize_dns_ipv4; optimize_sysctl; install_performance_tools
+                enable_root_ssh; enable_bbr; setup_swap; configure_dns_ntp; optimize_kernel; install_security_tools; cleanup_system
                 echo -e "\n${GREEN}*** 所有优化任务已执行完毕！ ***${NC}"
-                echo -e "${YELLOW}强烈建议您现在重启服务器 (输入 reboot) 以使所有设置完全生效。${NC}"
+                log_warn "强烈建议您现在重启服务器 (输入 reboot) 以使所有设置完全生效。"
                 break
                 ;;
             2) update_packages ;;
             3) enable_root_ssh ;;
             4) enable_bbr ;;
             5) setup_swap ;;
-            6) cleanup_system ;;
-            7) optimize_dns_ipv4 ;;
-            8) optimize_sysctl ;;
-            9) install_performance_tools ;;
+            6) configure_dns_ntp ;;
+            7) optimize_kernel ;;
+            8) install_security_tools ;;
+            9) cleanup_system ;;
             10) echo "感谢使用，再见！"; break ;;
             *) echo -e "${RED}无效的选项 $REPLY${NC}" ;;
         esac
     done
+}
+
+# --- 脚本入口 ---
+main() {
+    check_root
+    init_backup
+    detect_os
+    check_location
+    main_menu
 }
 
 main
