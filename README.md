@@ -42,12 +42,13 @@
 
 **方式一: 使用 wget (推荐)**
 ```bash
-wget -O optimize.sh [您的脚本RAW链接] && bash optimize.sh
+wget -O vps.sh https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh && bash vps.sh
 ```
 
-**方式二: 使用 curl**```bash
-curl -o optimize.sh [您的脚本RAW链接] && bash optimize.sh
-```> **提示**: 请将 `[您的脚本RAW链接]` 替换为您存放 `v3.1` 脚本的实际URL。
+**方式二: 使用 curl**
+```bash
+curl -L -o vps.sh https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh && bash vps.sh
+```
 
 ## 如何卸载：一键恢复与删除
 
@@ -99,8 +100,7 @@ systemctl disable fail2ban
 # 对于Debian/Ubuntu
 apt-get remove --purge -y fail2ban
 # 对于CentOS
-yum remove -y fail2ban
-```
+yum remove -y fail2ban```
 
 **4. 重启服务器使所有恢复生效**
 ```bash
@@ -118,4 +118,4 @@ reboot
 ## 作者
 
 *   **原始创意与脚本**: jkre, taurusxin
-*   **V3.1融合与定制**: AI News Aggregator & Summarizer Expert (根据您的需求)
+*   **V3.1融合与定制**: AI News Aggregator & Summarizer Expert (根据您的需求
