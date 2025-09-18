@@ -1,336 +1,551 @@
 #!/usr/bin/env bash
-#===============================================================================================
-#   System Name: Ultimate Performance Enforcement Protocol - FINAL ARCHITECTURE
-#   Version: v-Final-Architecture (Architecturally Sound, Non-Interactive)
-#   Author: AI Executor (Synthesized from all iterations under User's Final Mandate)
-#   
-#   此脚本将对系统进行永久性、破坏性的修改，包括但不限于：
-#   - 替换系统内核并禁用所有安全缓解措施
-#   - 永久修改硬件行为以榨取极限性能
-#   - 移除核心系统服务，包括日志和防火墙
-#   - 必然导致系统功耗剧增、稳定性下降且极易受到攻击
-#===============================================================================================
-
+# Ultimate Singularity - FINAL ALL-IN (Chinese)
+# Version: v2.0-final-all-in
+# Author: AI Executor (整合版)
+# 注意:
+#  1) 强烈建议先在测试机/快照上运行: ./script.sh --dry-run
+#  2) 若要启用极端不安全模式: ./script.sh --aggressive
+#  3) 所有修改会备份到 /root/ultimate_singularity_backups/<timestamp>/
 set -euo pipefail
 IFS=$'\n\t'
 
-# --- 全局配置 ---
-readonly SCRIPT_VERSION="v-Final-Architecture"
-readonly BACKUP_BASE="/root/ultimate_performance_backups"
-readonly TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-readonly BACKUP_DIR="${BACKUP_BASE}/${TIMESTAMP}"
-readonly RED='\033[0;31m'; readonly GREEN='\033[0;32m'; readonly YELLOW='\033[0;33m'; readonly CYAN='\033[0;36m'; readonly NC='\033[0m'
+# ---------- 配置 ----------
+SCRIPT_VER="v2.0-final-all-in"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_BASE="/root/ultimate_singularity_backups"
+BACKUP_DIR="${BACKUP_BASE}/${TIMESTAMP}"
+mkdir -p "${BACKUP_DIR}"
 
-# --- 日志与执行函数 ---
-log() { echo -e "\n${CYAN}>>> $1${NC}"; }
-success() { echo -e "${GREEN}✔ $1${NC}"; }
-warn() { echo -e "${YELLOW}⚠ $1${NC}"; }
-error() { echo -e "${RED}✖ $1${NC}"; }
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; PURPLE='\033[0;35m'; NC='\033[0m'
+log(){ echo -e "${CYAN}>>> $*${NC}"; }
+ok(){ echo -e "${GREEN}✔ $*${NC}"; }
+warn(){ echo -e "${YELLOW}⚠ $*${NC}"; }
+err(){ echo -e "${RED}✖ $*${NC}"; }
 
-backup_file() {
-    local file="$1"
-    if [[ -f "$file" ]]; then
-        cp -a "$file" "$BACKUP_DIR/$(basename "$file").bak"
-        log "已备份: $file"
-    fi
+# ---------- 参数解析 ----------
+AGGRESSIVE=0
+DRY_RUN=0
+AUTO_YES=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --aggressive) AGGRESSIVE=1 ;;
+    --dry-run) DRY_RUN=1 ;;
+    -y|--yes) AUTO_YES=1 ;;
+  esac
+done
+
+# ---------- 工具函数 ----------
+command_exists(){ command -v "$1" >/dev/null 2>&1; }
+backup_file(){
+  local f="$1"
+  [[ -e "$f" ]] || return 0
+  mkdir -p "$BACKUP_DIR"
+  cp -a "$f" "$BACKUP_DIR/$(basename "$f").bak" || true
+}
+apply_or_echo(){
+  # 如果 dry-run 则打印，否则执行
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] $*"
+  else
+    eval "$*"
+  fi
+}
+write_file_safe(){
+  local path="$1"; shift
+  local content="$*"
+  backup_file "$path"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] write to $path"
+  else
+    mkdir -p "$(dirname "$path")"
+    cat > "$path" <<< "$content"
+  fi
 }
 
-# --- 核心执行函数 ---
+# ---------- 环境检测（更智能） ----------
+detect_environment_and_role(){
+  log "开始智能环境检测..."
+  [[ -f /etc/os-release ]] && source /etc/os-release || true
+  OS_ID="${ID:-unknown}"
+  OS_VER="${VERSION_ID:-unknown}"
 
-step_1_kernel_and_grub() {
-    log "步骤1: [根基重构] 强制安装实时内核并配置GRUB"
-    
-    if [[ -f /etc/os-release ]]; then source /etc/os-release; OS_ID="${ID:-unknown}"; OS_CODENAME="${VERSION_CODENAME:-bullseye}"; else OS_ID="unknown"; OS_CODENAME="bullseye"; fi
-    local KERNEL_VERSION=$(uname -r)
-    
-    if [[ "$OS_ID" == "debian" || "$OS_ID" == "ubuntu" ]] && [[ "$(systemd-detect-virt 2>/dev/null)" != "lxc" ]]; then
-        if [[ "$KERNEL_VERSION" != *"xanmod"* ]]; then
-            warn "检测到非XanMod内核，开始强制替换为实时(RT)版本..."
-            
-            local apt_backup_dir="/tmp/apt_backup_$$"
-            mkdir -p "$apt_backup_dir/sources.list.d"
-            log "为确保内核安装，将临时接管系统APT环境..."
-            mv /etc/apt/sources.list "$apt_backup_dir/" 2>/dev/null || true
-            mv /etc/apt/sources.list.d/* "$apt_backup_dir/sources.list.d/" 2>/dev/null || true
-            
-            echo "deb http://deb.debian.org/debian ${OS_CODENAME} main" > /etc/apt/sources.list
-            
-            cleanup_apt() {
-                log "恢复原始APT环境..."
-                rm -f /etc/apt/sources.list
-                rm -rf /etc/apt/sources.list.d/*
-                mv "$apt_backup_dir/sources.list" /etc/apt/ 2>/dev/null || true
-                if [ -d "$apt_backup_dir/sources.list.d" ]; then mv "$apt_backup_dir/sources.list.d"/* /etc/apt/sources.list.d/ 2>/dev/null || true; fi
-                rm -rf "$apt_backup_dir"
-                log "正在重新同步所有原始APT源..."
-                apt-get update -qq >/dev/null
-            }
-            trap cleanup_apt EXIT
+  CPU_COUNT=$(nproc 2>/dev/null || echo 1)
+  CPU_ARCH=$(uname -m)
+  CPU_VENDOR=$(grep -m1 '^vendor_id' /proc/cpuinfo 2>/dev/null | awk '{print $3}' || echo unknown)
+  TOTAL_MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
 
-            apt-get update -qq >/dev/null
-            apt-get install -y -qq curl gpg >/dev/null
-            
-            local key_path="/usr/share/keyrings/xanmod-archive-keyring.gpg"
-            rm -f "$key_path"
-            wget -qO - https://dl.xanmod.org/gpg.key | gpg --dearmor -o "$key_path"
-            echo "deb [signed-by=$key_path] http://deb.xanmod.org releases main" | tee /etc/apt/sources.list.d/xanmod-release.list >/dev/null
-            
-            apt-get update -qq >/dev/null
-            apt-get install -y -qq linux-xanmod-rt-x64v3 || apt-get install -y -qq linux-xanmod-lts
-            
-            success "XanMod内核已强制安装。"
-            cleanup_apt
-            trap - EXIT
-        else
-            success "已检测到XanMod内核。"
-        fi
-    fi
-    
-    if [[ -f /etc/default/grub ]] && [[ "$(systemd-detect-virt 2>/dev/null)" != "lxc" ]]; then
-        backup_file /etc/default/grub
-        local CPU_COUNT=$(nproc)
-        local ISO=""
-        if [[ $CPU_COUNT -gt 2 ]]; then
-            local ISO_START=$(( CPU_COUNT - (CPU_COUNT/4) )); [[ $ISO_START -le 0 ]] && ISO_START=1
-            ISO="${ISO_START}-$((CPU_COUNT-1))"
-        fi
-        local GRUB_PARAMS="mitigations=off processor.max_cstate=0 intel_idle.max_cstate=0 idle=poll rcu_nocb_poll nohz_full=${ISO} rcu_nocbs=${ISO} isolcpus=${ISO} intel_pstate=disable nosmt nowatchdog nmi_watchdog=0 nosoftlockup transparent_hugepage=never"
-        sed -i.bak "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"${GRUB_PARAMS}\"|" /etc/default/grub
-        update-grub 2>/dev/null || grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
-        success "GRUB终极参数已固化。重启后生效。"
-    fi
+  PRIMARY_NIC=$(ip route 2>/dev/null | awk '/^default/ {print $5; exit}' || echo eth0)
+  ALL_NICS=( $(ls /sys/class/net | grep -v lo || true) )
+  VIRT_TYPE=$(command -v systemd-detect-virt >/dev/null 2>&1 && systemd-detect-virt || echo none)
+
+  # 容器检测
+  CONTAINER="none"
+  [[ -f /.dockerenv ]] && CONTAINER="docker"
+  [[ -n "${container:-}" ]] && CONTAINER="systemd-nspawn"
+
+  # NAT 检测（iptables/nft）
+  IP_FORWARD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)
+  HAS_NAT=false
+  if command_exists iptables-save && iptables-save 2>/dev/null | grep -E "(MASQUERADE|SNAT)" >/dev/null 2>&1; then HAS_NAT=true; fi
+  if command_exists nft && nft list ruleset 2>/dev/null | grep -E "(masquerade|snat)" >/dev/null 2>&1; then HAS_NAT=true; fi
+
+  # KVM detection
+  HAS_KVM=false
+  [[ -e /dev/kvm ]] && HAS_KVM=true
+  lsmod 2>/dev/null | grep -q kvm && HAS_KVM=true || true
+
+  # 更准确的角色判定（母鸡/ NAT 机 / 小鸡）
+  if [[ "$IP_FORWARD" -eq 1 || "$HAS_NAT" == true ]]; then
+    ROLE="nat"       # NAT 机
+  elif [[ "$VIRT_TYPE" == "none" && "$HAS_KVM" == true && "$TOTAL_MEM_MB" -ge 4096 ]]; then
+    ROLE="host"      # 母鸡
+  else
+    ROLE="guest"     # 小鸡
+  fi
+
+  ok "检测: OS=${OS_ID}/${OS_VER} CPU=${CPU_VENDOR}/${CPU_ARCH}/${CPU_COUNT} cores MEM=${TOTAL_MEM_MB}MB"
+  ok "网络: 主网卡=${PRIMARY_NIC}  网卡列表=${ALL_NICS[*]}"
+  ok "容器=${CONTAINER} 虚拟化=${VIRT_TYPE} 角色判定=${ROLE}"
 }
 
-step_2_sysctl() {
-    log "步骤2: [核心重构] Sysctl网络与内核栈极限优化"
-    local SYSCTL_FILE="/etc/sysctl.d/99-ultimate-zero-latency.conf"
-    backup_file "$SYSCTL_FILE"
-    
-    local available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "cubic")
-    local best_cc="bbr"; for cc in bbr3 bbr2; do if echo "$available_cc" | grep -q "$cc"; then best_cc="$cc"; break; fi; done
-    
-    cat > "$SYSCTL_FILE" <<-EOF
-#--- Ultimate Performance Protocol - FINAL ARCHITECTURE ---
-# [最终公理] 赋予系统海量的资源句柄
-fs.file-max=100000000
-fs.nr_open=100000000
-kernel.pid_max=4194304
-# [最终公理] 极限压榨内存管理，禁止交换
-vm.swappiness=0
-vm.vfs_cache_pressure=10
+# ---------- GRUB 优化（母鸡专属） ----------
+apply_grub(){
+  [[ "$ROLE" == "host" ]] || { warn "当前非母鸡(role=host)，跳过 GRUB 优化"; return; }
+  [[ "$CPU_COUNT" -ge 2 ]] || { warn "CPU 核心少于2，跳过 GRUB 优化"; return; }
+  GRUB_FILE="/etc/default/grub"
+  [[ -f "$GRUB_FILE" ]] || { warn "$GRUB_FILE 不存在，跳过"; return; }
+  backup_file "$GRUB_FILE"
+
+  # 智能计算隔离区间
+  local iso_count=$(( CPU_COUNT / 4 ))
+  [[ $iso_count -lt 1 ]] && iso_count=1
+  [[ $iso_count -gt 8 ]] && iso_count=8
+  local first_iso=$(( CPU_COUNT - iso_count ))
+  local ISO="${first_iso}-$((CPU_COUNT-1))"
+
+  # CPU 厂商特定
+  local CPU_SPEC=""
+  case "$CPU_VENDOR" in
+    GenuineIntel) CPU_SPEC="intel_pstate=disable intel_idle.max_cstate=0" ;;
+    AuthenticAMD) CPU_SPEC="amd_pstate=disable" ;;
+  esac
+
+  # 保守参数（默认不关 mitigations）
+  local GRUB_BASE="quiet loglevel=0"
+  local PERF="nohz_full=${ISO} rcu_nocbs=${ISO} isolcpus=${ISO} processor.max_cstate=1 idle=poll ${CPU_SPEC}"
+
+  if [[ "$AGGRESSIVE" -eq 1 ]]; then
+    PERF="${PERF} mitigations=off spectre_v2=off mds=off tsx_async_abort=off kernel.unprivileged_bpf_disabled=0"
+    warn "AGGRESSIVE 已启用：将尝试关闭若干安全缓解（不安全）"
+  fi
+
+  if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GRUB_FILE"; then
+    apply_or_echo "sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"${GRUB_BASE} ${PERF}\"|' ${GRUB_FILE}"
+  else
+    apply_or_echo "echo \"GRUB_CMDLINE_LINUX_DEFAULT=\\\"${GRUB_BASE} ${PERF}\\\"\" >> ${GRUB_FILE}"
+  fi
+  apply_or_echo "sed -i 's/^#*GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' ${GRUB_FILE} || true"
+  apply_or_echo "sed -i 's/^#*GRUB_TIMEOUT_STYLE=.*/GRUB_TIMEOUT_STYLE=hidden/' ${GRUB_FILE} || true"
+  if command_exists update-grub; then apply_or_echo "update-grub || true"; fi
+  if command_exists grub2-mkconfig; then apply_or_echo "grub2-mkconfig -o /boot/grub2/grub.cfg || true"; fi
+
+  ok "GRUB 参数已更新（如启用需重启生效）"
+}
+
+# ---------- Sysctl 智能优化（含角色差异与内存感知） ----------
+apply_sysctl(){
+  log "生成 sysctl 配置..."
+  SYSCTL_FILE="/etc/sysctl.d/99-ultimate-singularity-allin.conf"
+  backup_file "$SYSCTL_FILE"
+
+  # 内存相关智能计算
+  local mem_gb=$(( TOTAL_MEM_MB / 1024 ))
+  [[ $mem_gb -lt 1 ]] && mem_gb=1
+  local max_map_count=$(( mem_gb * 65536 ))
+  [[ $max_map_count -lt 262144 ]] && max_map_count=262144
+  [[ $max_map_count -gt 2097152 ]] && max_map_count=2097152
+
+  local rmem_max=$(( mem_gb * 33554432 ))
+  [[ $rmem_max -lt 67108864 ]] && rmem_max=67108864
+  [[ $rmem_max -gt 536870912 ]] && rmem_max=536870912
+
+  # base content
+  read -r -d '' SYSCTL_CONTENT <<EOF || true
+# Ultimate Singularity - ALL-IN generated
+fs.file-max=8388608
+fs.nr_open=8388608
+kernel.pid_max=8388608
+vm.max_map_count=${max_map_count}
+
+vm.swappiness=1
 vm.overcommit_memory=1
+vm.overcommit_ratio=100
 vm.dirty_ratio=5
 vm.dirty_background_ratio=2
-# [最终公理] 重构网络核心，一切为低延迟服务
-net.core.somaxconn=262144
-net.core.netdev_max_backlog=262144
-net.core.rmem_max=268435456
-net.core.wmem_max=268435456
-net.core.rmem_default=67108864
-net.core.wmem_default=67108864
-net.core.optmem_max=262144
-net.core.default_qdisc=fq
-# [最终公理] 启用最激进的CPU忙轮询
-net.core.busy_poll=1000
-net.core.busy_read=1000
-# [最终公理] 极限重构TCP协议栈
-net.ipv4.tcp_congestion_control=$best_cc
+vm.vfs_cache_pressure=50
+
+net.core.default_qdisc=fq_codel
+net.core.busy_poll=50
+net.core.busy_read=50
+net.core.rmem_max=${rmem_max}
+net.core.wmem_max=${rmem_max}
+net.core.rmem_default=$(( rmem_max / 2 ))
+net.core.wmem_default=$(( rmem_max / 2 ))
+net.core.optmem_max=134217728
+net.core.netdev_max_backlog=30000
+net.core.somaxconn=131072
+
+net.ipv4.tcp_rmem=4096 131072 ${rmem_max}
+net.ipv4.tcp_wmem=4096 65536 ${rmem_max}
+net.ipv4.tcp_congestion_control=bbr
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_fin_timeout=5
+net.ipv4.tcp_tw_reuse=1
 net.ipv4.tcp_low_latency=1
-net.ipv4.tcp_timestamps=1
-net.ipv4.tcp_sack=1
-net.ipv4.tcp_window_scaling=1
-net.ipv4.tcp_rmem=4096 262144 134217728
-net.ipv4.tcp_wmem=4096 262144 134217728
 net.ipv4.tcp_nodelay=1
 net.ipv4.tcp_quickack=1
-net.ipv4.tcp_autocorking=0
-net.ipv4.tcp_fin_timeout=5
-net.ipv4.tcp_retries2=3
-net.ipv4.tcp_syn_retries=2
-net.ipv4.tcp_max_syn_backlog=262144
 net.ipv4.tcp_mtu_probing=1
-net.ipv4.tcp_no_delay_ack=1
-net.ipv4.tcp_early_retrans=1
-net.ipv4.tcp_thin_linear_timeouts=1
-net.ipv4.tcp_notsent_lowat=32768
-# [最终公理] 极限重构UDP协议栈
-net.ipv4.udp_mem=8192 65536 268435456
-net.ipv4.udp_rmem_min=65536
-net.ipv4.udp_wmem_min=65536
-net.ipv4.udp_early_demux=1
-# [最终公理] 禁用IPv6
+
+net.ipv4.udp_mem=8192 131072 ${rmem_max}
+net.ipv4.udp_rmem_min=8192
+net.ipv4.udp_wmem_min=8192
+
 net.ipv6.conf.all.disable_ipv6=1
 net.ipv6.conf.default.disable_ipv6=1
-# [最终公理] 禁用所有影响性能的安全特性
-kernel.randomize_va_space=0
-net.ipv4.conf.all.rp_filter=0
-net.ipv4.conf.default.rp_filter=0
-net.ipv4.conf.all.accept_source_route=1
+
+net.ipv4.ip_local_port_range=1024 65535
 EOF
-    sysctl --system > /dev/null 2>&1
-    success "Sysctl终极配置已应用。"
+
+  # append role-specific
+  if [[ "$ROLE" == "host" ]]; then
+    SYSCTL_CONTENT="${SYSCTL_CONTENT}"$'\n'"# host specific\nnet.ipv4.ip_forward=0\nnet.ipv4.conf.all.rp_filter=1\nnet.ipv4.conf.default.rp_filter=1"
+  elif [[ "$ROLE" == "nat" ]]; then
+    SYSCTL_CONTENT="${SYSCTL_CONTENT}"$'\n'"# nat specific\nnet.ipv4.ip_forward=1\nnet.ipv4.conf.all.rp_filter=0\nnet.ipv4.conf.default.rp_filter=0\nnet.netfilter.nf_conntrack_max=4194304\nnet.netfilter.nf_conntrack_buckets=1048576"
+  else
+    SYSCTL_CONTENT="${SYSCTL_CONTENT}"$'\n'"# guest specific\nnet.ipv4.ip_forward=0\nnet.ipv4.conf.all.rp_filter=2\nnet.ipv4.conf.default.rp_filter=2"
+  fi
+
+  # AGGRESSIVE 增强（危险）
+  if [[ "$AGGRESSIVE" -eq 1 ]]; then
+    SYSCTL_CONTENT="${SYSCTL_CONTENT}"$'\n'"# AGGRESSIVE (unsafe) toggles\nkernel.randomize_va_space=0\nkernel.numa_balancing=0\nkernel.kptr_restrict=0\nkernel.dmesg_restrict=0"
+    warn "AGGRESSIVE 模式会关闭部分安全特性"
+  fi
+
+  write_file_safe "$SYSCTL_FILE" "$SYSCTL_CONTENT"
+  apply_or_echo "sysctl --system >/dev/null 2>&1 || true"
+  ok "sysctl 已写入并尝试加载"
 }
 
-step_3_hardware_and_interrupts() {
-    log "步骤3: [硬件固化] 通过Systemd服务永久固化硬件、中断与驱动"
-    
-    # 【新架构】 创建独立的帮助脚本
-    local HELPER_SCRIPT="/usr/local/bin/ultimate-performance-helper.sh"
-    local PRIMARY_NIC=$(ip route 2>/dev/null | awk '/^default/{print $5; exit}' || echo "eth0")
-    local CPU_COUNT=$(nproc)
-    local max_queues=$(ethtool -l "$PRIMARY_NIC" 2>/dev/null | awk '/Combined:/{print $2; exit}' || echo "$CPU_COUNT")
-    local optimal_queues=$([[ $CPU_COUNT -lt $max_queues ]] && echo "$CPU_COUNT" || echo "$max_queues")
-    local cpu_mask=$(printf "%x" $(((1 << CPU_COUNT) - 1)))
+# ---------- AI 驱动的动态硬件/网络优化脚本（离线启发式） ----------
+install_ai_dynamic_script(){
+  log "部署 AI 驱动动态优化脚本 (本地启发式决策)..."
+  HW_SCRIPT="/usr/local/bin/ultimate-hw-ai.sh"
+  backup_file "$HW_SCRIPT"
 
-    cat > "$HELPER_SCRIPT" <<EOF
-#!/bin/bash
-set -x
-NIC=\$(ip route 2>/dev/null | awk "/^default/{print \\\$5; exit}" || echo "$PRIMARY_NIC")
-# [绝对强制] CPU频率、节能与Boost
-if command -v cpupower >/dev/null 2>&1; then cpupower frequency-set -g performance; fi
-for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > \$cpu 2>/dev/null; done
-if [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo; fi
-if [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then echo 0 > /sys/devices/system/cpu/cpufreq/boost; fi
-# [绝对强制] 禁用透明大页
-echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
-echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null
-# [绝对强制] Ethtool终极优化 (纯延迟模式)
-if command -v ethtool >/dev/null 2>&1; then
-    max_rx=\$(ethtool -g \$NIC 2>/dev/null | awk -F"\\t" "/^RX:/{getline; print \\\$1}" || echo 4096)
-    max_tx=\$(ethtool -g \$NIC 2>/dev/null | awk -F"\\t" "/^TX:/{getline; print \\\$1}" || echo 4096)
-    ethtool -L \$NIC combined $optimal_queues &>/dev/null
-    ethtool -G \$NIC rx \$max_rx tx \$max_tx &>/dev/null
-    ethtool -C \$NIC adaptive-rx off adaptive-tx off rx-usecs 0 tx-usecs 0 rx-frames 1 tx-frames 1 &>/dev/null
-    for feature in gso gro tso lro sg rxhash rxvlan txvlan; do ethtool -K \$NIC \$feature off &>/dev/null; done
-fi
-# [绝对强制] 网卡中断亲和性: 均匀分布到所有核心
-irq_list=\$(grep "\$NIC" /proc/interrupts 2>/dev/null | awk "{print \\\$1}" | tr -d ":" || true)
-i=0; for irq in \$irq_list; do mask=\$(printf "%x" \$((1 << (i % $CPU_COUNT)))); echo \$mask > /proc/irq/\$irq/smp_affinity 2>/dev/null; i=\$((i + 1)); done
-# [绝对强制] RPS/XPS配置: 启用所有核心
-for rxq in /sys/class/net/\$NIC/queues/rx-*/rps_cpus; do echo $cpu_mask > \$rxq 2>/dev/null; done
-for txq in /sys/class/net/\$NIC/queues/tx-*/xps_cpus; do echo $cpu_mask > \$txq 2>/dev/null; done
-# [绝对强制] 实时调度与内核线程节流
-echo -1 > /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null
-for pid in \$(pgrep -f "ksoftirqd"); do chrt -f -p 99 \$pid 2>/dev/null; done
+  read -r -d '' HW_CONTENT <<'EOF' || true
+#!/usr/bin/env bash
+# ultimate-hw-ai.sh - 本地启发式 "AI" 动态优化
+set -euo pipefail
+IFS=$'\n\t'
+CPU_COUNT=$(nproc || echo 1)
+ALL_NICS=( $(ls /sys/class/net | grep -v lo || true) )
+
+# 设置 CPU 性能模式（可选）
+for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+  [[ -f "$gov" ]] && echo performance > "$gov" 2>/dev/null || true
+done
+
+# 逐网卡检测并调整
+for NIC in "${ALL_NICS[@]}"; do
+  [[ -d "/sys/class/net/$NIC" ]] || continue
+  [[ "$NIC" == "lo" ]] && continue
+  state=$(cat "/sys/class/net/$NIC/operstate" 2>/dev/null || echo down)
+  [[ "$state" == "up" ]] || continue
+
+  rx_old=$(cat /sys/class/net/$NIC/statistics/rx_bytes 2>/dev/null || echo 0)
+  tx_old=$(cat /sys/class/net/$NIC/statistics/tx_bytes 2>/dev/null || echo 0)
+  rx_pk_old=$(cat /sys/class/net/$NIC/statistics/rx_packets 2>/dev/null || echo 0)
+  tx_pk_old=$(cat /sys/class/net/$NIC/statistics/tx_packets 2>/dev/null || echo 0)
+  sleep 1
+  rx_new=$(cat /sys/class/net/$NIC/statistics/rx_bytes 2>/dev/null || echo 0)
+  tx_new=$(cat /sys/class/net/$NIC/statistics/tx_bytes 2>/dev/null || echo 0)
+  rx_pk_new=$(cat /sys/class/net/$NIC/statistics/rx_packets 2>/dev/null || echo 0)
+  tx_pk_new=$(cat /sys/class/net/$NIC/statistics/tx_packets 2>/dev/null || echo 0)
+
+  rx_speed=$((rx_new - rx_old))
+  tx_speed=$((tx_new - tx_old))
+  rx_pps=$(( (rx_pk_new - rx_pk_old) ))
+  tx_pps=$(( (tx_pk_new - tx_pk_old) ))
+
+  # 决策：ring sizes
+  rx_ring=1024; tx_ring=1024
+  if [[ $rx_speed -gt 200000000 ]]; then rx_ring=8192
+  elif [[ $rx_speed -gt 100000000 ]]; then rx_ring=4096
+  elif [[ $rx_speed -gt 50000000 ]]; then rx_ring=2048; fi
+
+  if [[ $tx_speed -gt 200000000 ]]; then tx_ring=8192
+  elif [[ $tx_speed -gt 100000000 ]]; then tx_ring=4096
+  elif [[ $tx_speed -gt 50000000 ]]; then tx_ring=2048; fi
+
+  # 高 PPS 场景额外放大
+  if [[ $rx_pps -gt 100000 || $tx_pps -gt 100000 ]]; then
+    rx_ring=$((rx_ring*2)); tx_ring=$((tx_ring*2))
+  fi
+
+  if command -v ethtool >/dev/null 2>&1; then
+    ethtool -G "$NIC" rx "$rx_ring" tx "$tx_ring" >/dev/null 2>&1 || true
+    # 中断合并（PPS 感知）
+    if [[ $rx_pps -gt 200000 || $tx_pps -gt 200000 ]]; then
+      ethtool -C "$NIC" adaptive-rx off adaptive-tx off rx-usecs 0 tx-usecs 0 >/dev/null 2>&1 || true
+    else
+      ethtool -C "$NIC" adaptive-rx on adaptive-tx on rx-usecs 10 tx-usecs 10 >/dev/null 2>&1 || true
+    fi
+    # 关闭高级 offload（若需要可改为按需开关）
+    ethtool -K "$NIC" gso off gro off tso off lro off >/dev/null 2>&1 || true
+  fi
+
+  # IRQ 绑定：简单轮询/均匀分布
+  irq_list=$(grep "$NIC" /proc/interrupts 2>/dev/null | awk '{print $1}' | tr -d ':' | head -16 || true)
+  idx=0
+  for irq in $irq_list; do
+    [[ -f "/proc/irq/$irq/smp_affinity" ]] || continue
+    cpu_target=$(( idx % CPU_COUNT ))
+    mask=$(printf "%x" $((1 << cpu_target)))
+    echo "$mask" > "/proc/irq/$irq/smp_affinity" 2>/dev/null || true
+    idx=$((idx+1))
+  done
+
+  # RPS/XPS 优化（如果支持）
+  if [[ -d "/sys/class/net/$NIC/queues" ]]; then
+    rps_mask=$(printf "%x" $(((1 << CPU_COUNT) - 1)))
+    for q in /sys/class/net/$NIC/queues/rx-*; do
+      [[ -f "$q/rps_cpus" ]] && echo "$rps_mask" > "$q/rps_cpus" 2>/dev/null || true
+    done
+    for q in /sys/class/net/$NIC/queues/tx-*; do
+      [[ -f "$q/xps_cpus" ]] && echo "$rps_mask" > "$q/xps_cpus" 2>/dev/null || true
+    done
+  fi
+done
+
+# Storage hints
+for dev in /sys/block/*/queue/read_ahead_kb; do
+  [[ -f "$dev" ]] && echo 128 > "$dev" 2>/dev/null || true
+done
+
+echo "ultimate-hw-ai done: $(date)"
 EOF
-    
-    chmod +x "$HELPER_SCRIPT"
-    success "独立的硬件优化脚本已创建: $HELPER_SCRIPT"
 
-    # 【新架构】 创建极简的Systemd服务文件
-    local SERVICE_FILE="/etc/systemd/system/ultimate-performance.service"
-    backup_file "$SERVICE_FILE"
-    cat > "$SERVICE_FILE" <<EOF
+  write_file_safe "$HW_SCRIPT" "$HW_CONTENT"
+  apply_or_echo "chmod +x ${HW_SCRIPT}"
+
+  # systemd service + timer
+  SERVICE="/etc/systemd/system/ultimate-hw-ai.service"
+  TIMER="/etc/systemd/system/ultimate-hw-ai.timer"
+  backup_file "$SERVICE"; backup_file "$TIMER"
+
+  read -r -d '' SVC <<'SVC' || true
 [Unit]
-Description=Ultimate Performance Hardware & Scheduling Service (FINAL ARCHITECTURE)
-After=network.target
+Description=Ultimate HW AI Dynamic Tuning
+After=network-online.target
+Wants=network-online.target
+
 [Service]
 Type=oneshot
-ExecStart=$HELPER_SCRIPT
+ExecStart=/usr/local/bin/ultimate-hw-ai.sh
+RemainAfterExit=yes
+
 [Install]
 WantedBy=multi-user.target
-EOF
+SVC
 
-    systemctl daemon-reload
-    systemctl enable --now ultimate-performance.service
-    success "硬件优化systemd服务已固化并立即生效。"
+  read -r -d '' TMR <<'TMR' || true
+[Unit]
+Description=Run Ultimate HW AI dynamic tuning periodically
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=300s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TMR
+
+  write_file_safe "$SERVICE" "$SVC"
+  write_file_safe "$TIMER" "$TMR"
+  apply_or_echo "systemctl daemon-reload || true"
+  apply_or_echo "systemctl enable --now ultimate-hw-ai.service || true"
+  apply_or_echo "systemctl enable --now ultimate-hw-ai.timer || true"
+  ok "AI 动态优化脚本与定时器部署完毕"
 }
 
-step_4_limits_and_io() {
-    log "步骤4: [系统固化] 系统限制与I/O调度器优化"
-    local LIMIT_FILE="/etc/security/limits.d/99-ultimate-zero-latency.conf"
-    backup_file "$LIMIT_FILE"
-    cat > "$LIMIT_FILE" <<'EOF'
-* soft nofile 100000000
-* hard nofile 100000000
-* soft nproc unlimited
-* hard nproc unlimited
-* soft memlock unlimited
-* hard memlock unlimited
-* soft rtprio 99
-* hard rtprio 99
-root soft nofile 100000000
-root hard nofile 100000000
-EOF
-    success "系统资源限制已提升至极限。"
-    
-    local UDEV_FILE="/etc/udev/rules.d/60-ultimate-io.rules"
-    backup_file "$UDEV_FILE"
-    cat > "$UDEV_FILE" <<'EOF'
-ACTION=="add|change", KERNEL=="sd[a-z]|vd[a-z]|nvme[0-9]n[0-9]", ATTR{queue/scheduler}="none", ATTR{queue/nr_requests}="2048"
-EOF
-    udevadm control --reload-rules && udevadm trigger || true
-    mount -o remount,noatime,nodiratime / || true
-    success "I/O调度器与挂载选项已优化。"
+# ---------- 系统限制、udev、I/O 优化 ----------
+apply_limits_and_udev(){
+  log "应用 limits 与 udev/I/O 优化..."
+  LIMITS="/etc/security/limits.d/99-ultimate-singularity.conf"
+  UDEV="/etc/udev/rules.d/60-ultimate-io.rules"
+  backup_file "$LIMITS"; backup_file "$UDEV"
+
+  LIMITS_CONTENT=$'* soft nofile 2097152\n* hard nofile 2097152\nroot soft nofile 2097152\nroot hard nofile 2097152\n* soft nproc unlimited\n* hard nproc unlimited\n'
+
+  UDEV_CONTENT=$'ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]", ATTR{queue/scheduler}="none", ATTR{queue/nr_requests}="1024"\nACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline", ATTR{queue/nr_requests}="1024"\n'
+
+  write_file_safe "$LIMITS" "$LIMITS_CONTENT"
+  write_file_safe "$UDEV" "$UDEV_CONTENT"
+
+  apply_or_echo "udevadm control --reload-rules || true"
+  apply_or_echo "udevadm trigger || true"
+  apply_or_echo "mount -o remount,noatime,nodiratime / >/dev/null 2>&1 || true"
+  ok "limits 与 udev 已写入"
 }
 
-step_5_cleanup_services() {
-    log "步骤5: [环境净化] 清理所有干扰服务"
-    local services_to_disable=(
-        irqbalance tuned thermald firewalld ufw nftables NetworkManager
-        avahi-daemon bluetooth cups snapd unattended-upgrades apt-daily.timer
-        rsyslog systemd-journald auditd lvm2-monitor mdmonitor cron
-    )
-    for service in "${services_to_disable[@]}"; do
-        if systemctl list-unit-files | grep -q "^${service}"; then
-            systemctl disable --now "${service}" >/dev/null 2>&1 || true
-        fi
-    done
-    success "所有可能产生干扰的系统服务已被永久禁用。"
+# ---------- 服务清理（角色感知、通配符支持） ----------
+cleanup_services(){
+  log "智能清理与禁用可能干扰性能的服务..."
+  services_common=(irqbalance tuned thermald bluetooth cups snapd unattended-upgrades rsyslog auditd cron)
+  services_net=(firewalld ufw nftables)
+  services_virt=(libvirtd virtlogd virtlockd)
+
+  to_disable=("${services_common[@]}")
+  if [[ "$ROLE" != "nat" ]]; then
+    to_disable+=("${services_net[@]}")
+  fi
+  if [[ "$ROLE" != "host" ]]; then
+    to_disable+=("${services_virt[@]}")
+  fi
+
+  for svc in "${to_disable[@]}"; do
+    # allow glob matching patterns (not used here, but kept)
+    apply_or_echo "systemctl disable --now ${svc} >/dev/null 2>&1 || true"
+  done
+
+  timers=(apt-daily.timer apt-daily-upgrade.timer fstrim.timer)
+  for t in "${timers[@]}"; do apply_or_echo "systemctl disable --now ${t} >/dev/null 2>&1 || true"; done
+
+  # 黑名单内核模块
+  MOD_BLACK="/etc/modprobe.d/ultimate-blacklist.conf"
+  backup_file "$MOD_BLACK"
+  MODS="bluetooth btusb pcspkr joydev"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] write $MOD_BLACK"
+  else
+    for m in $MODS; do echo "blacklist $m" >> "$MOD_BLACK" || true; done
+  fi
+
+  ok "尝试禁用/屏蔽冗余服务与模块（查看备份以回退）"
 }
 
-step_6_generate_guidance() {
-    log "步骤6: [最终指令] 生成应用层优化指南"
-    cat > "${BACKUP_DIR}/app_socket_hints.txt" <<'EOF'
-Application-level changes to implement for minimum latency:
+# ---------- 监控与基准脚本生成 ----------
+generate_tools(){
+  log "生成监控与基准脚本..."
+  MON="/usr/local/bin/ultimate-monitor.sh"
+  BENCH="/usr/local/bin/ultimate-bench.sh"
+  backup_file "$MON"; backup_file "$BENCH"
 
-1) Use SO_BUSY_POLL (requires <linux/net.h> support and net.core.busy_poll>0):
-   int busy = 1000; setsockopt(fd, SOL_SOCKET, SO_BUSY_POLL, &busy, sizeof(busy));
+  MON_CONTENT='#!/usr/bin/env bash
+echo "=== Ultimate Monitor ==="
+date
+echo "Role: $(cat /tmp/ultimate_role 2>/dev/null || echo Unknown)"
+echo "CPU: $(nproc) cores"
+free -h
+uptime
+ss -s
+echo "Top NIC RX/TX (MB):"
+for nic in $(ls /sys/class/net | grep -v lo); do rx=$(cat /sys/class/net/$nic/statistics/rx_bytes); tx=$(cat /sys/class/net/$nic/statistics/tx_bytes); printf "%s: RX=%dMB TX=%dMB\n" "$nic" $((rx/1024/1024)) $((tx/1024/1024)); done
+'
 
-2) Disable Nagle:
-   int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+  BENCH_CONTENT='#!/usr/bin/env bash
+echo "=== Ultimate Bench ==="
+echo "Ping test to 8.8.8.8"
+ping -c 4 8.8.8.8 || true
+echo "iperf3 test (if iperf3 installed) - client/server mode not provided here"
+if command -v dd >/dev/null 2>&1; then
+  echo "Memory write test (dd to /dev/null):"
+  dd if=/dev/zero of=/dev/null bs=1M count=1024 2>&1 | tail -n1 || true
+fi
+if command -v fio >/dev/null 2>&1; then
+  echo "fio installed - run fio tests separately"
+fi
+echo "Bench finished"
+'
 
-3) Enable QUICKACK (careful):
-   setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &one, sizeof(one));
-
-4) Use recvmmsg/sendmmsg for batching without syscalls.
-
-5) Consider kernel-bypass for ultimate latency: AF_XDP or DPDK.
-
-6) Use SCHED_DEADLINE or SCHED_FIFO for critical threads: 'chrt -f 99 ...'
-
-7) mlockall(MCL_CURRENT|MCL_FUTURE) to prevent page faults.
-
-8) Use CPU affinity (taskset / pthread_setaffinity_np) to pin your app to non-isolated cores.
-EOF
-    success "应用层指南已生成: ${BACKUP_DIR}/app_socket_hints.txt"
+  write_file_safe "$MON" "$MON_CONTENT"
+  write_file_safe "$BENCH" "$BENCH_CONTENT"
+  apply_or_echo "chmod +x $MON $BENCH"
+  echo "$ROLE" > /tmp/ultimate_role
+  ok "监控/基准脚本已生成 (/usr/local/bin/ultimate-monitor.sh, ultimate-bench.sh)"
 }
 
-# --- 主流程 ---
-main() {
-    if [[ "$(id -u)" -ne 0 ]]; then error "此脚本必须以root权限运行。"; exit 1; fi
-    clear
-    echo -e "${CYAN}======================================================================${NC}"
-    echo -e "      ${GREEN}终极性能协议 v-Final-Architecture (最终架构版) - 执行开始${NC}"
-    echo -e "${RED}      警告: 此操作不可逆，将对系统进行永久性底层修改。${NC}"
-    echo -e "${CYAN}======================================================================${NC}"
-    
-    mkdir -p "$BACKUP_DIR"
-    log "备份目录已创建: $BACKUP_DIR"
-    
-    step_1_kernel_and_grub
-    step_2_sysctl
-    step_3_hardware_and_interrupts
-    step_4_limits_and_io
-    step_5_cleanup_services
-    step_6_generate_guidance
-    
-    echo -e "\n${GREEN}======================================================================${NC}"
-    echo -e "${RED}      🚀 系统已进入最终的、不可变的性能形态! 🚀${NC}"
-    echo -e "${YELLOW}======================================================================${NC}"
-    echo -e "${GREEN}所有配置已根据延迟公理进行唯一性固化。网络协议栈与硬件中断已重构。${NC}"
-    error "最终指令: 必须【重启(reboot)】以激活全新的系统核心、GRUB参数与CPU隔离！"
-    echo -e "${CYAN}您的意志已贯彻。系统演化已终结。${NC}"
+# ---------- 角色特定推荐与大页处理 ----------
+apply_role_specific(){
+  log "应用角色特定优化建议（仅写入提示/基本配置）..."
+  if [[ "$ROLE" == "host" ]]; then
+    # 母鸡：大页、KVM/NUMA 建议
+    HP="/etc/hugepages/ultimate-hugepages.conf"
+    hp_count=$(( (TOTAL_MEM_MB / 200) ))
+    [[ $hp_count -lt 64 ]] && hp_count=64
+    [[ $hp_count -gt 4096 ]] && hp_count=4096
+    content="# hugepages recommendation for host\nnr_hugepages=${hp_count}\n"
+    write_file_safe "$HP" "$content"
+    ok "host 建议: nr_hugepages=${hp_count}（写入 ${HP}）"
+  elif [[ "$ROLE" == "nat" ]]; then
+    # NAT：conntrack/转发
+    CT="/etc/sysctl.d/99-conntrack.conf"
+    ct_content=$'net.netfilter.nf_conntrack_max=4194304\nnet.netfilter.nf_conntrack_buckets=1048576\n'
+    write_file_safe "$CT" "$ct_content"
+    ok "nat 建议: conntrack 参数写入 ${CT}"
+  else
+    ok "guest 建议: 优化 virtio 驱动、避免中断风暴"
+  fi
+}
+
+# ---------- 最终摘要与交互 ----------
+final_summary(){
+  echo
+  echo -e "${CYAN}================ 执行摘要 ================${NC}"
+  echo "时间: ${TIMESTAMP}"
+  echo "脚本版本: ${SCRIPT_VER}"
+  echo "角色: ${ROLE}"
+  echo "备份目录: ${BACKUP_DIR}"
+  echo "DRY-RUN: ${DRY_RUN}  AGGRESSIVE: ${AGGRESSIVE}"
+  echo -e "${CYAN}==========================================${NC}"
+  if [[ "$AGGRESSIVE" -eq 1 ]]; then
+    warn "注意：已启用 AGGRESSIVE 模式 — 多项安全缓解可能被关闭（请务必确认）"
+  fi
+}
+
+# ---------- 主流程 ----------
+main(){
+  [[ "$(id -u)" -ne 0 ]] && { err "请使用 root 权限运行脚本"; exit 1; }
+  detect_environment_and_role
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then warn "当前为 DRY-RUN 模式：不会写入任何系统关键文件"; fi
+
+  apply_sysctl
+  install_ai_dynamic_script
+  apply_limits_and_udev
+  cleanup_services
+  generate_tools
+  apply_role_specific
+  apply_grub
+
+  final_summary
+
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    if [[ "$AUTO_YES" -eq 1 ]]; then
+      REPLY="n"
+    else
+      read -p "是否现在重启以应用 GRUB（输入 REBOOT 立即重启，回车则不重启）? " REPLY
+    fi
+    if [[ "${REPLY}" == "REBOOT" || "${REPLY}" == "reboot" || "${REPLY}" == "REBOOT NOW" ]]; then
+      log "正在重启..."
+      sync
+      reboot
+    else
+      log "配置已完成。若更改 GRUB，请手动重启以生效。"
+    fi
+  fi
 }
 
 main "$@"
