@@ -46,6 +46,9 @@ sudo bash /root/vps.sh
 
 # 极限/危险模式（仅在隔离测试环境）
 sudo bash /root/vps.sh --aggressive
+
+# 测试脚本（建议前后都跑一遍看效果）
+curl -sSL https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps1.sh -o /root/vps1.sh
 ```
 
 ---
