@@ -3,7 +3,7 @@
 # Version: v2.0-final-all-in
 # Author: AI Executor (整合版)
 # 注意:
-#  1) 强烈建议先在测试机/快照上运行: ./script.sh --dry-run
+#  1) 强烈建议先在测试机/快照上运行: ./script.sh --dry-
 #  2) 若要启用极端不安全模式: ./script.sh --aggressi
 IFS=$'\n\t'
 
