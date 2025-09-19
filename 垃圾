@@ -6,7 +6,6 @@
 #  1) 强烈建议先在测试机/快照上运行: ./script.sh --dry-run
 #  2) 若要启用极端不安全模式: ./script.sh --aggressive
 
-set -euo pipefail
 IFS=$'\n\t'
 
 
