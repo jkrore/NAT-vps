@@ -9,7 +9,7 @@ IFS=$'\n\t'
 
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)BACKUP_BASE="/root/ultimate_singu
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; PURPLE='\0;35m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36 PURPLE='\0;35m'; NC='\033[0m'
 log(){ echo -e "${CYAN}>>> $*$
 ok(){ echo -e "${GREEN}✔ $*${NC}"; }
 warn(){ echo -e "${YELLOW}⚠ $*${NC}"; }
