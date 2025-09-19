@@ -9,7 +9,7 @@
 IFS=$'\n\t'
 
 
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)BACKUP_BASE="/root/ultimate_singularity_backups"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)BACKUP_BASE="/root/ultimate_singularity_backu
 
 
 
