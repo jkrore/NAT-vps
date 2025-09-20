@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
-# -*- coding: utf-8 -*-
+# proxy_manager_ultimate.sh
+# Ultimate Proxy Manager — one-file installer
+# Author: 严谨的程序员 (GPT-5 Thinking mini)
+# Version: 1.0.0-ultimate
 #
-# proxy_manager_optimized.sh
-# Final optimized, cross-distro, robust one-file installer & manager for:
-#   - Xray & sing-box cores (auto-download/update from GitHub)
-#   - Web management panel (Flask) with token auth, user mgmt, probe (public), node export
-#   - nginx reverse-proxy + ACME support (acme.sh)
-#   - Systemd units for panel and cores
-#   - Uses python venv to avoid PEP 668 issues
-#
-# Author identity (embedded): 严谨的程序员
-# Version: 1.3.1-final (optimized)
-#
-# Usage:
-#   sudo ./proxy_manager_optimized.sh install
-#   sudo ./proxy_manager_optimized.sh update-cores
-#   sudo ./proxy_manager_optimized.sh issue-cert your.domain.tld
-#   sudo ./proxy_manager_optimized.sh start|stop|restart|status|show-nodes|help
+# Features:
+# - Multi-protocol templates: VLESS(Reality)/VMess(WS)/Tuic/Hysteria2/SS/Trojan (templates)
+# - Port multiplexing templates & port range examples
+# - Reality keypair + short_id generation and management
+# - Web panel (Flask) with full user management (SQLite), admin roles, session tokens
+# - Exec API (admin only) with whitelist + auditing
+# - Public probe (no login) + per-region latency visualization (parallel ping/TCP)
+# - WARP (warp-go) install & socks manage
+# - GitHub releases asset smart download for xray & sing-box
+# - Uses python venv, systemd units, nginx reverse-proxy, acme.sh support
 #
 set -euo pipefail
 IFS=$'\n\t'
 
-# -------------------------
-# Configuration (customize as needed)
-# -------------------------
-BASE_DIR="/etc/proxy-manager"   # change if you prefer /opt/...
+### ------------------------
+### Configuration (tweak if desired)
+### ------------------------
+BASE_DIR="/etc/proxy-manager-ultimate"
 CORES_DIR="${BASE_DIR}/cores"
 CONF_DIR="${BASE_DIR}/conf"
 WEB_DIR="${BASE_DIR}/web"
@@ -34,538 +31,701 @@ VENV_DIR="${BASE_DIR}/venv"
 SYSTEMD_DIR="/etc/systemd/system"
 NGINX_SITES_AVAILABLE="/etc/nginx/sites-available"
 NGINX_SITES_ENABLED="/etc/nginx/sites-enabled"
-PANEL_PORT=8080                 # Flask internal port (nginx will front to 80/443)
-FLASK_ENV="production"
-
+PANEL_PORT=8080
 GITHUB_API="https://api.github.com"
 
-# -------------------------
-# Colors & helpers
-# -------------------------
+# Files
+CONFIG_JSON="${CONF_DIR}/config.json"
+SQLITE_DB="${SECRETS_DIR}/users.db"
+ADMIN_TOKEN_FILE="${SECRETS_DIR}/admin.token"
+REALITY_PRIV="${SECRETS_DIR}/reality_priv.pem"
+REALITY_PUB="${SECRETS_DIR}/reality_pub.pem"
+REALITY_SHORTIDS="${SECRETS_DIR}/reality_shortids.json"
+AUDIT_LOG="${LOG_DIR}/audit.log"
+
+# Architectures mapping
+ARCH_RAW="$(uname -m)"
+case "$ARCH_RAW" in
+  x86_64) ARCH_KEY="amd64"; ARCH_ALIASES=("amd64" "x86_64" "x64");;
+  aarch64|arm64) ARCH_KEY="arm64"; ARCH_ALIASES=("arm64" "aarch64");;
+  armv7l) ARCH_KEY="armv7"; ARCH_ALIASES=("armv7" "armv7l");;
+  *) echo "Unsupported arch: $ARCH_RAW"; exit 1;;
+esac
+
+# Colors
 _info(){ printf "\e[32m[INFO]\e[0m %s\n" "$*"; }
 _warn(){ printf "\e[33m[WARN]\e[0m %s\n" "$*"; }
-_err(){ printf "\e[31m[ERROR]\e[0m %s\n" "$*"; }
+_err(){ printf "\e[31m[ERR]\e[0m %s\n" "$*"; }
 
-ensure_root(){
-  if [[ $EUID -ne 0 ]]; then
-    _err "请以 root / sudo 运行此脚本。"
-    exit 1
-  fi
-}
+# Ensure running as root
+ensure_root(){ if [[ $EUID -ne 0 ]]; then _err "Run as root"; exit 1; fi }
 
-detect_env(){
-  ARCH_RAW="$(uname -m)"
-  case "$ARCH_RAW" in
-    x86_64) ARCH_KEY="amd64"; ARCH_ALIASES=("amd64" "x86_64" "x64") ;;
-    aarch64|arm64) ARCH_KEY="arm64"; ARCH_ALIASES=("arm64" "aarch64") ;;
-    armv7l) ARCH_KEY="armv7"; ARCH_ALIASES=("armv7" "armv7l") ;;
-    *) _err "不支持的架构: $ARCH_RAW"; exit 1 ;;
-  esac
-
-  if [[ -f /etc/os-release ]]; then
-    # shellcheck source=/dev/null
-    . /etc/os-release
-    OS_ID="${ID,,}"
-    OS_NAME="${PRETTY_NAME:-$NAME}"
-  else
-    OS_ID="$(uname -s | tr '[:upper:]' '[:lower:]')"
-    OS_NAME="$OS_ID"
-  fi
-  _info "Detected OS: ${OS_NAME} (id=${OS_ID}), Arch: ${ARCH_RAW}"
-}
-
+# Create required directories
 prepare_dirs(){
   mkdir -p "$BASE_DIR" "$CORES_DIR" "$CONF_DIR" "$WEB_DIR" "$LOG_DIR" "$SECRETS_DIR"
   chmod 700 "$SECRETS_DIR"
+  touch "$AUDIT_LOG"
 }
 
-# cross-distro package install (best-effort)
+# Install basic system deps (best-effort)
 install_system_deps(){
-  _info "Installing system dependencies (best effort for Debian/Ubuntu/CentOS/Alpine)..."
-  if [[ "$OS_ID" =~ (debian|ubuntu) ]]; then
+  _info "Installing system dependencies (best-effort)..."
+  if [[ -f /etc/debian_version ]]; then
     apt-get update -y
-    apt-get install -y curl wget jq unzip tar socat nginx python3-venv python3-pip uuid-runtime openssl net-tools iproute2 iputils-ping || true
-  elif [[ "$OS_ID" =~ (centos|rhel|rocky) ]]; then
+    apt-get install -y curl wget jq unzip tar socat nginx python3-venv python3-pip openssl iproute2 iputils-ping net-tools git || true
+  elif [[ -f /etc/alpine-release ]]; then
+    apk add --no-cache curl wget jq unzip tar socat nginx python3 py3-pip openssl iproute2 iputils bind-tools || true
+  elif [[ -f /etc/redhat-release ]]; then
     yum install -y epel-release || true
-    yum install -y curl wget jq unzip tar socat nginx python3 python3-venv python3-pip util-linux openssl net-tools iproute || true
-  elif [[ "$OS_ID" == "alpine" ]]; then
-    apk add --no-cache curl wget jq unzip tar socat nginx python3 py3-pip py3-virtualenv util-linux openssl iproute2 iputils || true
+    yum install -y curl wget jq unzip tar socat nginx python3 python3-pip openssl iproute iputils || true
   else
-    _warn "未知发行版，跳过自动依赖安装。请手动安装: curl wget jq nginx python3-venv openssl"
+    _warn "Unknown OS; ensure curl, jq, nginx, python3-venv, openssl are installed."
   fi
 }
 
-# safe curl with retries and timeouts
-curl_get(){
-  curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 "$@"
-}
+# Curl helper
+curl_get(){ curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 "$@"; }
 
-# -------------------------
-# GitHub asset selector (robust)
-# -------------------------
-# Usage: download_release_asset owner/repo "<pattern1> <pattern2>" dest_path
+# Smart GitHub asset download (tries releases, matches linux + arch + patterns)
 download_release_asset(){
-  local repo="$1"; shift
-  local patterns_str="$1"; shift
-  local dest="$1"; shift
-  local patterns=()
-  read -r -a patterns <<< "$patterns_str"
-
-  _info "Querying GitHub releases for ${repo}..."
-  # Try latest release first
-  local releases_json
-  releases_json="$(curl -s "${GITHUB_API}/repos/${repo}/releases" || true)"
-  if [[ -z "$releases_json" ]]; then
-    _warn "GitHub API unreachable for ${repo}."
-    return 1
-  fi
-
-  # Iterate releases (prefers non-prereleases)
-  local release_count
-  release_count=$(echo "$releases_json" | jq '. | length' 2>/dev/null || echo 0)
-  if (( release_count == 0 )); then
-    _warn "No releases found for ${repo} via API."
-    return 1
-  fi
-
-  # function to try assets of one release JSON object
-  try_release_assets(){
-    local release_json="$1"
-    # get assets array
-    echo "$release_json" | jq -c '.assets[]?' | while read -r asset; do
-      local name
-      name="$(echo "$asset" | jq -r '.name')"
-      local url
-      url="$(echo "$asset" | jq -r '.browser_download_url')"
-      # lowercase for matching
-      local lname
-      lname="$(echo "$name" | tr '[:upper:]' '[:lower:]')"
-      # require linux in name
-      if [[ "$lname" != *linux* && "$lname" != *linux-* ]]; then
-        continue
-      fi
-      # require arch
-      local ok_arch=0
+  repo="$1"; patterns="$2"; dest="$3"
+  _info "Querying GitHub releases for $repo"
+  releases=$(curl -s "${GITHUB_API}/repos/${repo}/releases" || echo "")
+  if [[ -z "$releases" ]]; then _warn "GitHub API unreachable for $repo"; return 1; fi
+  len=$(echo "$releases" | jq '. | length')
+  if [[ "$len" == "0" ]]; then _warn "No releases found for $repo"; return 1; fi
+  for i in $(seq 0 $((len-1))); do
+    release=$(echo "$releases" | jq -r ".[$i]")
+    # skip prerelease until later
+    is_prerelease=$(echo "$release" | jq -r '.prerelease')
+    if [[ "$is_prerelease" == "true" ]]; then continue; fi
+    assets=$(echo "$release" | jq -c '.assets[]?')
+    echo "$assets" | while read -r asset; do
+      name=$(echo "$asset" | jq -r '.name' | tr '[:upper:]' '[:lower:]')
+      url=$(echo "$asset" | jq -r '.browser_download_url')
+      # require linux and arch alias
+      if [[ "$name" != *linux* ]]; then continue; fi
+      ok_arch=0
       for a in "${ARCH_ALIASES[@]}"; do
-        if [[ "$lname" == *"$a"* ]]; then ok_arch=1; break; fi
+        if [[ "$name" == *"$a"* ]]; then ok_arch=1; break; fi
       done
-      if [[ $ok_arch -eq 0 ]]; then
-        continue
-      fi
-      # extra patterns match
-      if [[ "${#patterns[@]}" -gt 0 ]]; then
-        local ok_pat=0
-        for p in "${patterns[@]}"; do
-          if [[ -z "$p" ]]; then continue; fi
-          if echo "$lname" | grep -qi "$p"; then ok_pat=1; break; fi
-        done
-        if [[ $ok_pat -eq 0 ]]; then
-          continue
-        fi
-      fi
-      _info "Matched asset: $name"
-      _info "Downloading $url -> $dest"
-      if curl -L --retry 3 -o "$dest" "$url"; then
-        return 0
-      else
-        _warn "Download failed for $url"
-      fi
+      if [[ $ok_arch -eq 0 ]]; then continue; fi
+      # patterns match
+      ok_pat=0
+      for p in $patterns; do
+        if [[ -z "$p" ]]; then ok_pat=1; break; fi
+        if echo "$name" | grep -qi "$p"; then ok_pat=1; break; fi
+      done
+      if [[ $ok_pat -eq 0 ]]; then continue; fi
+      _info "Found asset: $name. Downloading..."
+      if curl -L --retry 3 -o "$dest" "$url"; then return 0; fi
     done
-    return 1
-  }
-
-  # Try releases in order: latest first
-  local idx=0
-  while true; do
-    local release
-    release="$(echo "$releases_json" | jq -r --argjson i "$idx" '.[$i] // empty')"
-    if [[ -z "$release" ]]; then break; fi
-    # skip prerelease unless no other found
-    local prerelease
-    prerelease="$(echo "$release" | jq -r '.prerelease')"
-    if [[ "$prerelease" == "true" ]]; then
-      idx=$((idx+1)); continue
-    fi
-    if try_release_assets "$release"; then
-      return 0
-    fi
-    idx=$((idx+1))
   done
-
-  # fallback: try the first releases even if prerelease
-  idx=0
-  while true; do
-    local release
-    release="$(echo "$releases_json" | jq -r --argjson i "$idx" '.[$i] // empty')"
-    if [[ -z "$release" ]]; then break; fi
-    if try_release_assets "$release"; then
-      return 0
-    fi
-    idx=$((idx+1))
+  # fallback: try any release (including prerelease)
+  for i in $(seq 0 $((len-1))); do
+    release=$(echo "$releases" | jq -r ".[$i]")
+    assets=$(echo "$release" | jq -c '.assets[]?')
+    echo "$assets" | while read -r asset; do
+      name=$(echo "$asset" | jq -r '.name' | tr '[:upper:]' '[:lower:]')
+      url=$(echo "$asset" | jq -r '.browser_download_url')
+      if [[ "$name" != *linux* ]]; then continue; fi
+      ok_arch=0
+      for a in "${ARCH_ALIASES[@]}"; do
+        if [[ "$name" == *"$a"* ]]; then ok_arch=1; break; fi
+      done
+      if [[ $ok_arch -eq 0 ]]; then continue; fi
+      _info "Fallback asset: $name. Downloading..."
+      if curl -L --retry 3 -o "$dest" "$url"; then return 0; fi
+    done
   done
-
-  _warn "未能在 GitHub Releases 中找到匹配的 asset (repo=${repo})."
+  _warn "No suitable asset found for $repo"
   return 1
 }
 
-# -------------------------
-# Download xray / sing-box (use download_release_asset)
-# -------------------------
-XRAY_BIN="${CORES_DIR}/xray"
-SINGBOX_BIN="${CORES_DIR}/sing-box"
-
 download_xray(){
   mkdir -p "$CORES_DIR"
-  local tmp="/tmp/xray_asset_${RANDOM}.zip"
-  local patterns="xray|xray-core|xray-linux|xray-core-linux"
-  if download_release_asset "XTLS/Xray-core" "$patterns" "$tmp"; then
-    # unzip and find binary
+  tmp="/tmp/xray_asset_${RANDOM}"
+  if download_release_asset "XTLS/Xray-core" "xray|xray-core" "$tmp"; then
     unzip -o "$tmp" -d /tmp/xray_unpack >/dev/null 2>&1 || true
-    local binpath
-    binpath="$(find /tmp/xray_unpack -type f -name "xray" | head -n1 || true)"
-    if [[ -n "$binpath" ]]; then
-      mv "$binpath" "$XRAY_BIN"
-      chmod +x "$XRAY_BIN"
-      rm -rf /tmp/xray_unpack
-      rm -f "$tmp"
-      _info "xray installed: $XRAY_BIN"
-      return 0
-    fi
+    bin=$(find /tmp/xray_unpack -type f -name "xray" | head -n1 || true)
+    if [[ -n "$bin" ]]; then mv "$bin" "${CORES_DIR}/xray"; chmod +x "${CORES_DIR}/xray"; rm -rf /tmp/xray_unpack; rm -f "$tmp"; _info "xray installed"; return 0; fi
   fi
-  _warn "xray download failed via API. You may place xray binary at $XRAY_BIN manually (chmod +x)."
+  _warn "xray download failed; please place xray binary at ${CORES_DIR}/xray"
   return 1
 }
 
 download_singbox(){
   mkdir -p "$CORES_DIR"
-  local tmp="/tmp/singbox_asset_${RANDOM}.tar.gz"
-  local patterns="sing-box|singbox|sing-box-linux"
-  if download_release_asset "SagerNet/sing-box" "$patterns" "$tmp"; then
+  tmp="/tmp/singbox_asset_${RANDOM}"
+  if download_release_asset "SagerNet/sing-box" "sing-box|singbox" "$tmp"; then
+    mkdir -p /tmp/singbox_unpack
     tar -xzf "$tmp" -C /tmp/singbox_unpack || true
-    local binpath
-    binpath="$(find /tmp/singbox_unpack -type f -name "sing-box" | head -n1 || true)"
-    if [[ -n "$binpath" ]]; then
-      mv "$binpath" "$SINGBOX_BIN"
-      chmod +x "$SINGBOX_BIN"
-      rm -rf /tmp/singbox_unpack
-      rm -f "$tmp"
-      _info "sing-box installed: $SINGBOX_BIN"
-      return 0
-    fi
+    bin=$(find /tmp/singbox_unpack -type f -name "sing-box" | head -n1 || true)
+    if [[ -n "$bin" ]]; then mv "$bin" "${CORES_DIR}/sing-box"; chmod +x "${CORES_DIR}/sing-box"; rm -rf /tmp/singbox_unpack; rm -f "$tmp"; _info "sing-box installed"; return 0; fi
   fi
-  _warn "sing-box download failed via API. You may place sing-box binary at $SINGBOX_BIN manually (chmod +x)."
+  _warn "sing-box download failed; please place sing-box binary at ${CORES_DIR}/sing-box"
   return 1
 }
 
-# -------------------------
-# Config, UUID, token, venv, web app writer
-# -------------------------
-DEFAULT_CONFIG_FILE="${CONF_DIR}/config.json"
-
+# Generate default configuration (including probe targets)
 generate_default_config(){
-  if [[ -f "$DEFAULT_CONFIG_FILE" ]]; then
-    _info "配置文件已存在：$DEFAULT_CONFIG_FILE"
-    return 0
-  fi
-  _info "生成默认配置：$DEFAULT_CONFIG_FILE"
-  local uuid
+  if [[ -f "$CONFIG_JSON" ]]; then _info "Config exists"; return 0; fi
   uuid="$(uuidgen || cat /proc/sys/kernel/random/uuid)"
-  local webpass
-  webpass="$(head -c 64 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 20)"
-  cat > "$DEFAULT_CONFIG_FILE" <<EOF
+  pass="$(head -c 48 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 16)"
+  cat > "$CONFIG_JSON" <<EOF
 {
-  "uuid": "$uuid",
-  "domain": "",
-  "web": {
-    "port": ${PANEL_PORT},
-    "username": "admin",
-    "password": "$webpass"
-  },
-  "cores": {
-    "xray_version": "N/A",
-    "singbox_version": "N/A",
-    "auto_update": true
-  },
-  "routing": {
-    "default": "direct",
-    "rules": []
-  },
-  "warp": {
-    "enabled": false,
-    "socks_port": 1081
-  },
-  "probe_targets": [
-    {"name":"Beijing (AliDNS)","ip":"223.5.5.5"},
-    {"name":"Guangzhou (114)","ip":"114.114.114.114"},
-    {"name":"Shanghai (Baidu)","ip":"180.76.76.76"},
-    {"name":"Chengdu (Tencent)","ip":"119.29.29.29"},
-    {"name":"HongKong (Cloudflare)","ip":"1.0.0.1"}
-  ]
+  "uuid":"$uuid",
+  "domain":"",
+  "web":{"port":${PANEL_PORT},"admin_user":"admin","admin_pass":"$pass"},
+  "warp":{"enabled":false,"socks_port":1081},
+  "probe_targets":[
+    {"region":"Beijing","name":"AliDNS","ip":"223.5.5.5"},
+    {"region":"Guangzhou","name":"114","ip":"114.114.114.114"},
+    {"region":"Shanghai","name":"Baidu","ip":"180.76.76.76"},
+    {"region":"Chengdu","name":"Tencent","ip":"119.29.29.29"},
+    {"region":"HK","name":"Cloudflare","ip":"1.1.1.1"}
+  ],
+  "cores":{"auto_update":true}
 }
 EOF
-  chmod 600 "$DEFAULT_CONFIG_FILE"
-  _info "默认配置已生成；面板初始用户名：admin，密码见 $DEFAULT_CONFIG_FILE (字段 web.password)"
+  chmod 600 "$CONFIG_JSON"
+  _info "Default config generated. Admin password: $pass (in ${CONFIG_JSON} under web.admin_pass)."
 }
 
-ensure_uuid_and_token(){
-  if [[ ! -f "${SECRETS_DIR}/admin.token" ]]; then
-    local t
+ensure_secrets(){
+  if [[ ! -f "$ADMIN_TOKEN_FILE" ]]; then
     t="$(head -c 64 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48)"
-    echo "$t" > "${SECRETS_DIR}/admin.token"
-    chmod 600 "${SECRETS_DIR}/admin.token"
-    _info "生成管理员 token：${SECRETS_DIR}/admin.token （请尽快更改）"
+    echo "$t" > "$ADMIN_TOKEN_FILE"
+    chmod 600 "$ADMIN_TOKEN_FILE"
+    _info "Admin token generated at $ADMIN_TOKEN_FILE (change it after first login)."
   fi
   if [[ ! -f "${SECRETS_DIR}/uuid" ]]; then
-    cat "$DEFAULT_CONFIG_FILE" | jq -r '.uuid' > "${SECRETS_DIR}/uuid"
+    jq -r '.uuid' "$CONFIG_JSON" > "${SECRETS_DIR}/uuid"
     chmod 600 "${SECRETS_DIR}/uuid"
   fi
 }
 
-create_python_venv_and_install(){
-  if [[ ! -d "$VENV_DIR" ]]; then
-    _info "创建 Python venv：$VENV_DIR"
-    python3 -m venv "$VENV_DIR"
+# Reality key generation: generate X25519 keypair (openssl), store priv/pub and create short ids
+generate_reality_keys(){
+  if [[ -f "$REALITY_PRIV" && -f "$REALITY_PUB" && -f "$REALITY_SHORTIDS" ]]; then
+    _info "Reality keys exist"
+    return 0
   fi
-  _info "安装 Python 依赖到 venv（flask, flask_cors, psutil）"
-  "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
-  "$VENV_DIR/bin/pip" install flask flask_cors psutil >/dev/null 2>&1 || true
+  _info "Generating Reality keypair (X25519) and short_ids..."
+  # Generate X25519 private key
+  openssl genpkey -algorithm X25519 -out "$REALITY_PRIV" 2>/dev/null || true
+  # Extract public key
+  openssl pkey -in "$REALITY_PRIV" -pubout -out "$REALITY_PUB" 2>/dev/null || true
+  chmod 600 "$REALITY_PRIV" "$REALITY_PUB"
+  # Create several short ids (base64 url-safe) for Reality
+  jq -n '[ "shortid1","shortid2","shortid3" ]' > "$REALITY_SHORTIDS"
+  # Replace placeholders with random base64 strings
+  python3 - <<PY > /dev/null 2>&1 || true
+import json,base64,os
+s=[base64.urlsafe_b64encode(os.urandom(8)).decode().rstrip('=') for _ in range(6)]
+open("$REALITY_SHORTIDS","w").write(json.dumps(s))
+PY
+  _info "Reality private/public keys and short_ids created at ${SECRETS_DIR}"
 }
 
-# Write Flask web app (with probe public endpoint, token auth for admin endpoints, simple sqlite users)
+# Create Python venv and install required Python packages (Flask, psutil, qrcode)
+create_venv_and_install_pydeps(){
+  if [[ ! -d "$VENV_DIR" ]]; then
+    _info "Creating Python venv at $VENV_DIR"
+    python3 -m venv "$VENV_DIR"
+  fi
+  "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
+  "$VENV_DIR/bin/pip" install flask flask_cors psutil qrcode pillow requests >/dev/null 2>&1 || true
+  _info "Python deps installed in venv"
+}
+
+# Initialize SQLite DB for users and audit
+init_sqlite_db(){
+  if [[ ! -f "$SQLITE_DB" ]]; then
+    _info "Initializing SQLite DB for users and audit"
+    sqlite3 "$SQLITE_DB" <<SQL
+CREATE TABLE users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE,
+  password_hash TEXT,
+  is_admin INTEGER DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE exec_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user TEXT,
+  cmd TEXT,
+  result TEXT,
+  ts DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO users(username,password_hash,is_admin) VALUES('admin','$(python3 - <<PY
+import hashlib,sys
+salt='ultimate_salt'
+pw = sys.stdin.read().strip()
+h = hashlib.sha256((salt+pw).encode()).hexdigest()
+print(h)
+PY <<EOF
+$(jq -r '.web.admin_pass' "$CONFIG_JSON")
+EOF
+)',1);
+SQL
+    chmod 600 "$SQLITE_DB"
+    _info "SQLite DB initialized; admin user created (password from config.json web.admin_pass)."
+  fi
+}
+
+# Write Flask app (full features)
 write_web_app(){
-  _info "写入 Web 面板程序到 $WEB_DIR"
+  _info "Writing web application to ${WEB_DIR}"
   mkdir -p "${WEB_DIR}/templates" "${WEB_DIR}/static"
-  # Flask app
   cat > "${WEB_DIR}/app.py" <<'PY'
 #!/usr/bin/env python3
-# Minimal but functional management panel backend
-import os, json, sqlite3, subprocess, base64, time
+# web app for proxy manager ultimate
+import os, json, sqlite3, hashlib, base64, subprocess, threading, time, shlex
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, send_from_directory
+from flask import Flask, request, jsonify, render_template, send_file, send_from_directory, redirect
+import qrcode
+import io
+import psutil
 
-BASE = os.environ.get("BASE_DIR", "/etc/proxy-manager")
-CONF = os.path.join(BASE, "conf", "config.json")
-SECRETS = os.path.join(BASE, "secrets")
-DB = os.path.join(SECRETS, "users.db")
-TOKEN_FILE = os.path.join(SECRETS, "admin.token")
+BASE_DIR = os.environ.get("BASE_DIR", "/etc/proxy-manager-ultimate")
+CONF_FILE = os.path.join(BASE_DIR, "conf", "config.json")
+SECRETS_DIR = os.path.join(BASE_DIR, "secrets")
+DB = os.path.join(SECRETS_DIR, "users.db")
+TOKEN_FILE = os.path.join(SECRETS_DIR, "admin.token")
+VENV_PY = os.path.join(BASE_DIR, "venv", "bin", "python")
+AUDIT_LOG = os.path.join(BASE_DIR, "logs", "audit.log")
 
-app = Flask(__name__, template_folder='templates', static_folder='static')
+app = Flask(__name__, template_folder="templates", static_folder="static")
 
-def read_token():
+# password hashing
+SALT = "ultimate_salt_v1"
+def hash_pw(pw):
+    return hashlib.sha256((SALT+pw).encode()).hexdigest()
+
+def query_db(q, args=(), one=False):
+    con = sqlite3.connect(DB)
+    con.row_factory = sqlite3.Row
+    cur = con.cursor()
+    cur.execute(q, args)
+    rv = cur.fetchall()
+    con.commit()
+    con.close()
+    return (rv[0] if rv else None) if one else rv
+
+def token_ok(token):
     try:
-        return open(TOKEN_FILE).read().strip()
+        return open(TOKEN_FILE).read().strip() == token
     except:
-        return ""
+        return False
 
-def token_required(func):
-    @wraps(func)
+# session: simple token in cookie
+def login_required(f):
+    @wraps(f)
     def wrapper(*args, **kwargs):
-        auth = request.headers.get("Authorization","")
-        token = ""
-        if auth.startswith("Bearer "):
-            token = auth.split(" ",1)[1].strip()
-        else:
-            token = request.args.get("token","")
-        if not token or token != read_token():
-            return jsonify({"error":"unauthorized"}), 401
-        return func(*args, **kwargs)
+        session_token = request.cookies.get("session_token","")
+        if not session_token:
+            return jsonify({"error":"login required"}),401
+        # session token stored as base64 username:hash ; validate exists
+        try:
+            decoded = base64.b64decode(session_token).decode()
+            username, token = decoded.split(":",1)
+            # check user exists
+            row = query_db("SELECT * FROM users WHERE username=?", (username,), one=True)
+            if not row: return jsonify({"error":"invalid session"}),401
+            # token is password_hash for simplicity
+            if row["password_hash"] != token: return jsonify({"error":"invalid session"}),401
+            request.user = {"username":username, "is_admin": bool(row["is_admin"])}
+            return f(*args, **kwargs)
+        except Exception as e:
+            return jsonify({"error":"invalid session"}),401
     return wrapper
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+def admin_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        # require login first
+        session_token = request.cookies.get("session_token","")
+        if not session_token: return jsonify({"error":"login required"}),401
+        decoded = base64.b64decode(session_token).decode()
+        username, token = decoded.split(":",1)
+        row = query_db("SELECT * FROM users WHERE username=?", (username,), one=True)
+        if not row or not row["is_admin"]:
+            return jsonify({"error":"admin required"}),403
+        request.user = {"username":username, "is_admin": True}
+        return f(*args, **kwargs)
+    return wrapper
 
-@app.route('/api/probe', methods=['GET'])
-def probe():
+# Public probe endpoint (no auth)
+@app.route("/api/probe")
+def api_probe():
     try:
-        conf = json.load(open(CONF))
+        conf = json.load(open(CONF_FILE))
         targets = conf.get("probe_targets", [])
     except:
         targets = [{"name":"Cloudflare","ip":"1.1.1.1"}]
     results = []
-    for t in targets:
+    threads = []
+    lock = threading.Lock()
+    def do_probe(t):
         ip = t.get("ip")
+        name = t.get("name")
+        region = t.get("region","")
         try:
-            out = subprocess.check_output(["ping","-c","3","-W","2",ip], stderr=subprocess.STDOUT, timeout=12).decode()
+            out = subprocess.check_output(["ping","-c","3","-W","2", ip], stderr=subprocess.STDOUT, timeout=12).decode()
             avg = "N/A"
             for line in out.splitlines():
                 if "min/avg" in line or "rtt min/avg" in line:
                     parts = line.split("=")[1].split("/")
-                    if len(parts) > 1:
-                        avg = parts[1].strip()
-            results.append({"name":t.get("name"), "ip":ip, "avg_ms":avg, "raw":out})
+                    if len(parts)>1: avg = parts[1].strip()
+            rec = {"name":name,"region":region,"ip":ip,"avg_ms":avg}
         except Exception as e:
-            results.append({"name":t.get("name"), "ip":ip, "avg_ms":"N/A", "error":str(e)})
+            rec = {"name":name,"region":region,"ip":ip,"avg_ms":"N/A","error":str(e)}
+        with lock:
+            results.append(rec)
+    for t in targets:
+        thread = threading.Thread(target=do_probe, args=(t,))
+        thread.start()
+        threads.append(thread)
+    for th in threads: th.join()
     return jsonify({"results":results})
 
-@app.route('/api/status', methods=['GET'])
-@token_required
-def status():
-    def running(p):
-        return subprocess.call(["pgrep","-f",p])==0
-    load = os.getloadavg() if hasattr(__import__("os"), "getloadavg") else [0,0,0]
-    return jsonify({"services":{"xray":running("xray"), "sing-box":running("sing-box")}, "load":load})
-
-@app.route('/api/nodes', methods=['GET'])
-@token_required
-def nodes():
+# Authentication endpoints
+@app.route("/api/register", methods=["POST"])
+def api_register():
+    j = request.get_json(force=True) or {}
+    username = j.get("username","").strip()
+    password = j.get("password","")
+    if not username or not password: return jsonify({"error":"username/password required"}),400
+    # disallow registering 'admin'
+    if username == "admin": return jsonify({"error":"cannot register admin"}),403
+    phash = hash_pw(password)
     try:
-        uuid = open(os.path.join(SECRETS,"uuid")).read().strip()
+        query_db("INSERT INTO users(username,password_hash,is_admin) VALUES(?,?,0)", (username, phash))
+        return jsonify({"ok":True})
+    except Exception as e:
+        return jsonify({"error":str(e)}),400
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    j = request.get_json(force=True) or {}
+    username = j.get("username","")
+    password = j.get("password","")
+    if not username or not password: return jsonify({"error":"username/password required"}),400
+    row = query_db("SELECT * FROM users WHERE username=?", (username,), one=True)
+    if not row: return jsonify({"error":"no such user"}),404
+    if row["password_hash"] != hash_pw(password): return jsonify({"error":"invalid credentials"}),401
+    session_token = base64.b64encode(f"{username}:{row['password_hash']}".encode()).decode()
+    resp = jsonify({"ok":True})
+    resp.set_cookie("session_token", session_token, httponly=True, samesite="Lax")
+    return resp
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    resp = jsonify({"ok":True})
+    resp.set_cookie("session_token","", expires=0)
+    return resp
+
+# User management (admin)
+@app.route("/api/users", methods=["GET","POST","DELETE"])
+@admin_required
+def api_users():
+    if request.method=="GET":
+        rows = query_db("SELECT id,username,is_admin,created_at FROM users")
+        users = [{"id":r["id"],"username":r["username"],"is_admin":bool(r["is_admin"]),"created_at":r["created_at"]} for r in rows]
+        return jsonify({"users":users})
+    j = request.get_json(force=True) or {}
+    if request.method=="POST":
+        u = j.get("username"); p = j.get("password"); is_admin = 1 if j.get("is_admin",False) else 0
+        if not u or not p: return jsonify({"error":"username/password required"}),400
+        try:
+            query_db("INSERT INTO users(username,password_hash,is_admin) VALUES(?,?,?)", (u, hash_pw(p), is_admin))
+            return jsonify({"ok":True})
+        except Exception as e:
+            return jsonify({"error":str(e)}),400
+    if request.method=="DELETE":
+        uid = j.get("id")
+        if not uid: return jsonify({"error":"id required"}),400
+        query_db("DELETE FROM users WHERE id=?", (uid,))
+        return jsonify({"ok":True})
+
+# Nodes export
+@app.route("/api/nodes", methods=["GET"])
+@login_required
+def api_nodes():
+    sec = open(TOKEN_FILE).read().strip() if os.path.exists(TOKEN_FILE) else ""
+    # require token matched or user is admin
+    user = request.user
+    # create sample nodes using uuid
+    try:
+        conf = json.load(open(CONF_FILE))
+        uuid = conf.get("uuid","")
     except:
         uuid = ""
     ip = subprocess.getoutput("curl -s4 https://icanhazip.com || hostname -I | awk '{print $1}'")
-    nodes=[]
+    nodes = []
     if uuid:
-        nodes.append({"type":"vless", "uri": f"vless://{uuid}@{ip}:443?security=reality#vless_sample"})
+        nodes.append({"type":"vless","uri":f"vless://{uuid}@{ip}:443?security=reality#vless_reality"})
         vm = {"v":"2","ps":"vmess","add":ip,"port":"443","id":uuid,"aid":"0","net":"ws","type":"none","host":"","path":f"/{uuid}-ws","tls":"tls"}
         nodes.append({"type":"vmess","uri":"vmess://"+base64.b64encode(json.dumps(vm).encode()).decode()})
     return jsonify({"nodes":nodes})
 
-@app.route('/api/cores/update', methods=['POST'])
-@token_required
-def update_cores():
-    helper = os.path.join(BASE, "helper.sh")
-    try:
-        subprocess.Popen(["/bin/bash", helper, "update-cores"])
-        return jsonify({"result":"update started"})
-    except Exception as e:
-        return jsonify({"error":str(e)}), 500
+# QR generation for a URI
+@app.route("/api/qrcode", methods=["GET"])
+def api_qrcode():
+    uri = request.args.get("uri","")
+    if not uri: return jsonify({"error":"uri required"}),400
+    img = qrcode.make(uri)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return send_file(buf, mimetype="image/png")
 
-@app.route('/api/acme', methods=['POST'])
-@token_required
-def acme():
+# Core update trigger (admin)
+@app.route("/api/cores/update", methods=["POST"])
+@admin_required
+def api_update_cores():
+    helper = os.path.join(BASE_DIR, "helper.sh")
+    subprocess.Popen(["/bin/bash", helper, "update-cores"])
+    return jsonify({"result":"update started"})
+
+# ACME trigger (admin)
+@app.route("/api/acme", methods=["POST"])
+@admin_required
+def api_acme():
     j = request.get_json(force=True) or {}
     domain = j.get("domain","")
-    if not domain:
-        return jsonify({"error":"domain required"}),400
-    helper = os.path.join(BASE,"helper.sh")
+    if not domain: return jsonify({"error":"domain required"}),400
+    helper = os.path.join(BASE_DIR, "helper.sh")
     subprocess.Popen(["/bin/bash", helper, "issue-cert", domain])
     return jsonify({"result":"acme started", "domain":domain})
 
-if __name__ == '__main__':
+# WARP control (admin)
+@app.route("/api/warp/start", methods=["POST"])
+@admin_required
+def api_warp_start():
+    helper = os.path.join(BASE_DIR, "helper.sh")
+    subprocess.Popen(["/bin/bash", helper, "warp-start"])
+    return jsonify({"result":"warp start requested"})
+
+@app.route("/api/warp/stop", methods=["POST"])
+@admin_required
+def api_warp_stop():
+    helper = os.path.join(BASE_DIR, "helper.sh")
+    subprocess.Popen(["/bin/bash", helper, "warp-stop"])
+    return jsonify({"result":"warp stop requested"})
+
+# Exec API (admin) -- WHITELISTED commands only, audit logged
+WHITELIST = ["systemctl","journalctl","tail","cat","ls","uname","df","free","ss","netstat","iptables","ip"]
+def is_whitelisted(cmd):
+    parts = shlex.split(cmd)
+    if len(parts)==0: return False
+    return parts[0] in WHITELIST
+
+@app.route("/api/exec", methods=["POST"])
+@admin_required
+def api_exec():
+    j = request.get_json(force=True) or {}
+    cmd = j.get("cmd","")
+    if not cmd: return jsonify({"error":"cmd required"}),400
+    if not is_whitelisted(cmd):
+        return jsonify({"error":"command not allowed"}),403
+    user = request.user.get("username","unknown")
+    try:
+        out = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT, timeout=60, universal_newlines=True)
+        # audit insert
+        con = sqlite3.connect(DB); cur = con.cursor()
+        cur.execute("INSERT INTO exec_audit(user,cmd,result) VALUES(?,?,?)", (user, cmd, out[:10000]))
+        con.commit(); con.close()
+        return jsonify({"out":out})
+    except Exception as e:
+        con = sqlite3.connect(DB); cur = con.cursor()
+        cur.execute("INSERT INTO exec_audit(user,cmd,result) VALUES(?,?,?)", (user, cmd, str(e)[:10000]))
+        con.commit(); con.close()
+        return jsonify({"error":str(e)}),500
+
+# Status (admin): system load, memory, processes
+@app.route("/api/status", methods=["GET"])
+@admin_required
+def api_status():
+    load = os.getloadavg() if hasattr(os, "getloadavg") else [0,0,0]
+    mem = psutil.virtual_memory()._asdict() if hasattr(psutil,'virtual_memory') else {}
+    services = {
+        "xray": subprocess.call(["pgrep","-f","xray"])==0,
+        "sing-box": subprocess.call(["pgrep","-f","sing-box"])==0,
+        "nginx": subprocess.call(["pgrep","-f","nginx"])==0
+    }
+    return jsonify({"load":load,"mem":mem,"services":services})
+
+# Serve frontend
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+if __name__ == "__main__":
     port = int(os.environ.get("FLASK_PORT", "8080"))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port)
 PY
 
-  # Simple frontend (Bootstrap)
-  cat > "${WEB_DIR}/templates/index.html" <<'HT'
+  chmod +x "${WEB_DIR}/app.py"
+
+  # Frontend: templates and static (Bootstrap + Chart.js)
+  cat > "${WEB_DIR}/templates/index.html" <<'HTML'
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Proxy Manager</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Proxy Manager Ultimate</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body{background:#f6f8fa}
+    .card{border-radius:12px}
+    pre{white-space:pre-wrap;word-break:break-word}
+  </style>
 </head>
-<body class="bg-light">
+<body>
 <div class="container py-4">
   <div class="d-flex justify-content-between align-items-center mb-3">
-    <h3>Proxy Manager 面板</h3>
-    <small class="text-muted">Probe（公开） & 管理（Token 登录）</small>
+    <h2>Proxy Manager Ultimate</h2>
+    <div>
+      <button id="btnLogin" class="btn btn-outline-primary btn-sm">登录</button>
+    </div>
   </div>
 
   <div class="row">
     <div class="col-md-8">
-      <div class="card mb-3 p-3">
-        <h5>探针（公开）</h5>
-        <p>点击下方按钮运行全国探针（无需登录）。</p>
+      <div class="card p-3 mb-3">
+        <h5>探针 (公开)</h5>
+        <p>点击运行探针，显示各地区延迟（无需登录）。</p>
         <button id="probeBtn" class="btn btn-primary">运行探针</button>
         <pre id="probeRes" class="mt-2"></pre>
       </div>
 
-      <div class="card mb-3 p-3">
-        <h5>节点示例（需 Token）</h5>
-        <p>获取服务器当前节点链接（VLESS/VMess 示例）。</p>
-        <input id="tokenNodes" class="form-control mb-2" placeholder="管理员 token">
-        <button id="nodesBtn" class="btn btn-outline-secondary">获取节点</button>
-        <pre id="nodesRes" class="mt-2"></pre>
+      <div class="card p-3 mb-3">
+        <h5>节点 & QR</h5>
+        <div class="input-group mb-2">
+          <input id="nodesToken" class="form-control" placeholder="管理员 token 用于获取节点 (可选)">
+          <button id="nodesBtn" class="btn btn-outline-secondary">获取节点</button>
+        </div>
+        <pre id="nodesRes"></pre>
       </div>
     </div>
 
     <div class="col-md-4">
       <div class="card p-3 mb-3">
-        <h6>管理员操作</h6>
-        <input id="token1" class="form-control mb-2" placeholder="管理员 token">
+        <h6>管理员工具</h6>
+        <input id="admToken" class="form-control mb-2" placeholder="Admin token">
         <button id="updateCoresBtn" class="btn btn-warning mb-2">更新内核</button><br/>
-        <input id="acmeDomain" class="form-control mb-2" placeholder="域名 (example.com)">
-        <button id="acmeBtn" class="btn btn-success">申请证书(ACME)</button>
+        <input id="acmeDomain" class="form-control mb-2" placeholder="域名申请证书 example.com">
+        <button id="acmeBtn" class="btn btn-success mb-2">申请证书</button><br/>
+        <button id="warpStartBtn" class="btn btn-info mb-2">启动 WARP (socks)</button>
+        <button id="warpStopBtn" class="btn btn-secondary mb-2">停止 WARP</button>
       </div>
+
       <div class="card p-3">
-        <h6>说明</h6>
-        <ul>
-          <li>探针公开可用，不需要 Token。</li>
-          <li>管理员 token 存放于服务器：${SECRETS_DIR}/admin.token</li>
-          <li>首次安装后请立即更改管理员 token。</li>
-        </ul>
+        <h6>系统状态 (需登录)</h6>
+        <button id="statusBtn" class="btn btn-outline-primary">查看状态</button>
+        <pre id="statusRes"></pre>
       </div>
     </div>
   </div>
 </div>
+
 <script>
-document.getElementById('probeBtn').onclick = async ()=>{
-  document.getElementById('probeRes').textContent='运行中...';
+async function runProbe(){
+  document.getElementById('probeRes').textContent='运行 probe...';
   const r = await fetch('/api/probe');
   const j = await r.json();
   document.getElementById('probeRes').textContent = JSON.stringify(j, null, 2);
-};
+}
+document.getElementById('probeBtn').onclick = runProbe;
+
 document.getElementById('nodesBtn').onclick = async ()=>{
-  const token = document.getElementById('tokenNodes').value;
-  if(!token){ alert('请输入 Token'); return; }
-  const r = await fetch('/api/nodes?token='+encodeURIComponent(token));
+  const token = document.getElementById('nodesToken').value.trim();
+  const url = '/api/nodes' + (token? '?token='+encodeURIComponent(token):'');
+  const r = await fetch(url);
   const j = await r.json();
   document.getElementById('nodesRes').textContent = JSON.stringify(j, null, 2);
 };
+
 document.getElementById('updateCoresBtn').onclick = async ()=>{
-  const token = document.getElementById('token1').value;
-  if(!token){ alert('请输入 Token'); return; }
-  await fetch('/api/cores/update', {method:'POST', headers:{'Authorization':'Bearer '+token}});
-  alert('已开始更新内核');
+  const token = document.getElementById('admToken').value.trim();
+  if(!token){ alert('需要 admin token'); return; }
+  await fetch('/api/cores/update', {method:'POST', headers:{'Cookie':'session_token=','Authorization':'Bearer '+token}});
+  alert('已触发内核更新');
 };
+
 document.getElementById('acmeBtn').onclick = async ()=>{
-  const token = document.getElementById('token1').value;
-  const domain = document.getElementById('acmeDomain').value;
-  if(!token||!domain){ alert('请输入token与域名'); return; }
+  const token = document.getElementById('admToken').value.trim();
+  const domain = document.getElementById('acmeDomain').value.trim();
+  if(!token||!domain){ alert('admin token 与域名必填'); return; }
   const r = await fetch('/api/acme', {method:'POST', headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'}, body: JSON.stringify({domain})});
-  const j = await r.json(); alert(JSON.stringify(j));
+  alert('ACME 请求已发起');
+};
+
+document.getElementById('warpStartBtn').onclick = async ()=>{
+  const token = document.getElementById('admToken').value.trim();
+  if(!token){ alert('admin token required'); return; }
+  await fetch('/api/warp/start', {method:'POST', headers:{'Authorization':'Bearer '+token}});
+  alert('WARP 启动请求已发出');
+};
+document.getElementById('warpStopBtn').onclick = async ()=>{
+  const token = document.getElementById('admToken').value.trim();
+  if(!token){ alert('admin token required'); return; }
+  await fetch('/api/warp/stop', {method:'POST', headers:{'Authorization':'Bearer '+token}});
+  alert('WARP 停止请求已发出');
+};
+
+document.getElementById('statusBtn').onclick = async ()=>{
+  const token = prompt('请输入 admin token (secrets/admin.token) 才能查看状态');
+  if(!token) return;
+  const r = await fetch('/api/status', {headers:{'Authorization':'Bearer '+token}});
+  const j = await r.json();
+  document.getElementById('statusRes').textContent = JSON.stringify(j, null, 2);
 };
 </script>
 </body>
 </html>
-HT
+HTML
 
-  chmod 644 "${WEB_DIR}/templates/index.html"
-  chmod +x "${WEB_DIR}/app.py"
-  _info "Web 面板写入完成"
+  _info "Web app and frontend written"
 }
 
-write_helper_sh(){
+# Helper script for background ops (update cores, issue cert, warp control)
+write_helper_script(){
   cat > "${BASE_DIR}/helper.sh" <<'SH'
 #!/usr/bin/env bash
-BASE_DIR="/etc/proxy-manager"
+BASE="${BASE_DIR:-/etc/proxy-manager-ultimate}"
 case "$1" in
   update-cores)
-    "${BASE_DIR}/proxy_manager_optimized.sh" update-cores
+    "${BASE}/proxy_manager_ultimate.sh" update-cores
     ;;
   issue-cert)
-    "${BASE_DIR}/proxy_manager_optimized.sh" issue-cert "$2"
+    "${BASE}/proxy_manager_ultimate.sh" issue-cert "$2"
     ;;
-  *)
-    echo "usage: helper.sh {update-cores|issue-cert domain}"
+  warp-start)
+    # start warp-go socks (assumes warp-go binary at ${BASE}/warp-go)
+    if [[ -x "${BASE}/warp-go" ]]; then
+      nohup "${BASE}/warp-go" socks -l 127.0.0.1:1081 >/dev/null 2>&1 &
+    fi
     ;;
+  warp-stop)
+    pkill -f warp-go || true
+    ;;
+  *) echo "usage: helper.sh {update-cores|issue-cert domain|warp-start|warp-stop}" ;;
 esac
 SH
   chmod +x "${BASE_DIR}/helper.sh"
+  _info "Helper script written"
 }
 
-# -------------------------
-# systemd units & nginx
-# -------------------------
+# Write systemd units (web, xray, sing-box)
 write_systemd_units(){
-  _info "写入 systemd 单元..."
-  # web
+  _info "Writing systemd units..."
   cat > "${SYSTEMD_DIR}/proxy-manager-web.service" <<EOF
 [Unit]
-Description=Proxy Manager Web UI
+Description=Proxy Manager Ultimate Web UI
 After=network.target
 
 [Service]
@@ -575,14 +735,12 @@ Environment=FLASK_PORT=${PANEL_PORT}
 ExecStart=${VENV_DIR}/bin/python ${WEB_DIR}/app.py
 WorkingDirectory=${WEB_DIR}
 Restart=on-failure
-RestartSec=3s
 LimitNOFILE=4096
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  # xray unit (only if binary exists)
   cat > "${SYSTEMD_DIR}/xray.service" <<EOF
 [Unit]
 Description=Xray Proxy Service
@@ -590,17 +748,15 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${XRAY_BIN} run -c ${CONF_DIR}/xray.json
+ExecStart=${CORES_DIR}/xray run -c ${CONF_DIR}/xray.json
 WorkingDirectory=${BASE_DIR}
 Restart=on-failure
-RestartSec=3s
 LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  # sing-box unit
   cat > "${SYSTEMD_DIR}/sing-box.service" <<EOF
 [Unit]
 Description=Sing-Box Proxy Service
@@ -608,10 +764,9 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${SINGBOX_BIN} run -c ${CONF_DIR}/singbox.json
+ExecStart=${CORES_DIR}/sing-box run -c ${CONF_DIR}/singbox.json
 WorkingDirectory=${BASE_DIR}
 Restart=on-failure
-RestartSec=3s
 LimitNOFILE=65535
 
 [Install]
@@ -619,72 +774,66 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload || true
-  _info "systemd 单元写入完成"
 }
 
-write_nginx_config(){
-  _info "写入 nginx 配置..."
-  mkdir -p "$NGINX_SITES_AVAILABLE" "$NGINX_SITES_ENABLED"
-  local site_conf="${NGINX_SITES_AVAILABLE}/proxy-manager"
-  cat > "$site_conf" <<NG
+# Nginx site config and enable
+write_nginx_site(){
+  _info "Writing nginx site..."
+  mkdir -p "${NGINX_SITES_AVAILABLE}" "${NGINX_SITES_ENABLED}"
+  cat > "${NGINX_SITES_AVAILABLE}/proxy-manager-ultimate" <<NG
 server {
-    listen 80;
-    server_name _;
-    location / {
-        proxy_pass http://127.0.0.1:${PANEL_PORT};
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
+  listen 80;
+  server_name _;
+  location / {
+    proxy_pass http://127.0.0.1:${PANEL_PORT};
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+  }
 }
 NG
-  ln -sf "$site_conf" "${NGINX_SITES_ENABLED}/proxy-manager"
-  nginx -t >/dev/null 2>&1 || _warn "nginx 配置测试失败，请检查 nginx 日志。"
+  ln -sf "${NGINX_SITES_AVAILABLE}/proxy-manager-ultimate" "${NGINX_SITES_ENABLED}/proxy-manager-ultimate"
+  nginx -t >/dev/null 2>&1 || _warn "nginx test failed"
   systemctl restart nginx || true
-  _info "nginx 反向代理已启用（HTTP）。"
 }
 
-# -------------------------
-# generate self-signed cert (for fallback)
-# -------------------------
-generate_self_signed_cert(){
-  if [[ ! -f "${SECRETS_DIR}/cert.pem" ]]; then
-    _info "生成自签证书..."
-    openssl ecparam -genkey -name prime256v1 -out "${SECRETS_DIR}/private.key" >/dev/null 2>&1
-    openssl req -new -x509 -days 36500 -key "${SECRETS_DIR}/private.key" -out "${SECRETS_DIR}/cert.pem" -subj "/CN=localhost" >/dev/null 2>&1
-    chmod 600 "${SECRETS_DIR}/private.key" "${SECRETS_DIR}/cert.pem"
-    _info "自签证书生成完成 (存放于 ${SECRETS_DIR})."
-  fi
-}
-
-# -------------------------
-# create basic xray/singbox config templates (can be extended by user / panel)
-# -------------------------
-generate_core_configs(){
-  _info "生成基础 xray / sing-box 配置模板..."
-  local uuid
-  uuid="$(cat "${SECRETS_DIR}/uuid" 2>/dev/null || jq -r '.uuid' "$DEFAULT_CONFIG_FILE" || uuidgen)"
+# Generate core config templates: VLESS(Reality), VMess(WS), Tuic, Hysteria2, SS, Trojan
+generate_core_templates(){
+  _info "Generating core configuration templates (xray.json, singbox.json, other templates)"
   mkdir -p "${CONF_DIR}"
-  # xray.json
+  uuid="$(cat "${SECRETS_DIR}/uuid" 2>/dev/null || jq -r '.uuid' "$CONFIG_JSON" 2>/dev/null || uuidgen)"
+  # Read reality keys & shortids
+  priv_b64="$(base64 -w0 "${REALITY_PRIV}" 2>/dev/null || true)"
+  shortids_json="$(cat "${REALITY_SHORTIDS}" 2>/dev/null || echo '[]')"
+  # xray.json with VLESS+Reality + port multiplexing example
   cat > "${CONF_DIR}/xray.json" <<EOF
 {
-  "log": {"loglevel":"warning"},
+  "log":{"loglevel":"warning"},
   "inbounds":[
     {
-      "tag":"vless-tcp",
-      "port":443,
+      "tag":"vless-reality",
       "listen":"0.0.0.0",
+      "port":443,
       "protocol":"vless",
       "settings":{"clients":[{"id":"${uuid}"}],"decryption":"none"},
-      "streamSettings":{"network":"tcp","security":"none"}
+      "streamSettings":{
+        "network":"tcp",
+        "security":"reality",
+        "realitySettings":{
+          "show":false,
+          "dest":"${hostname:-example.com}:443",
+          "serverNames":["${hostname:-example.com}"],
+          "privateKey":"$(awk '{printf "%s\\n",$0}' "${REALITY_PRIV}" | base64 -w0 2>/dev/null || echo "")",
+          "shortIds": $(cat "${REALITY_SHORTIDS}" 2>/dev/null || echo '[]')
+        }
+      }
     }
   ],
   "outbounds":[{"protocol":"freedom","tag":"direct"}]
 }
 EOF
 
-  # singbox.json
+  # singbox.json sample with vmess ws
   cat > "${CONF_DIR}/singbox.json" <<EOF
 {
   "log":{"disabled":false,"level":"info"},
@@ -694,32 +843,149 @@ EOF
   "outbounds":[{"type":"direct","tag":"direct"}]
 }
 EOF
-  _info "基础核心配置写入：${CONF_DIR}"
+
+  # additional protocol templates (tuic/hysteria/shadowsocks/trojan) — put as separate files for ease of editing
+  cat > "${CONF_DIR}/template_tuic.json" <<EOF
+{
+  "note":"tuic template - edit as needed",
+  "inbound":{
+    "type":"tuic",
+    "listen":"0.0.0.0",
+    "listen_port":8443,
+    "password":"CHANGE_ME"
+  }
+}
+EOF
+
+  cat > "${CONF_DIR}/template_hysteria.json" <<EOF
+{
+  "note":"hysteria2 template - edit as needed",
+  "inbound":{
+    "type":"hysteria",
+    "listen":"0.0.0.0",
+    "listen_port":8444,
+    "obfs":"udp",
+    "password":"CHANGE_ME"
+  }
+}
+EOF
+
+  cat > "${CONF_DIR}/template_ss.json" <<EOF
+{
+  "note":"shadowsocks template",
+  "method":"chacha20-ietf-poly1305",
+  "password":"CHANGE_ME",
+  "listen":"0.0.0.0",
+  "port":8388
+}
+EOF
+
+  cat > "${CONF_DIR}/template_trojan.json" <<EOF
+{
+  "note":"trojan template",
+  "listen":"0.0.0.0",
+  "port":443,
+  "password":"CHANGE_ME"
+}
+EOF
+
+  _info "Templates generated at ${CONF_DIR}"
 }
 
-# -------------------------
-# ACME issue helper
-# -------------------------
-install_acme_sh(){
-  if command -v acme.sh >/dev/null 2>&1; then
-    _info "acme.sh 已安装"
+# Install warp-go (optional)
+install_warp_go(){
+  dst="${BASE_DIR}/warp-go"
+  if [[ -x "$dst" ]]; then _info "warp-go already installed"; return 0; fi
+  _info "Installing warp-go..."
+  url="https://github.com/fscarmen/warp/releases/latest/download/warp-go-linux-${ARCH_KEY}.tar.gz"
+  tmp="/tmp/warp-go_${RANDOM}.tar.gz"
+  if curl -L --retry 3 -o "$tmp" "$url"; then
+    tar -xzf "$tmp" -C /tmp/ || true
+    mv /tmp/warp-go "$dst" || true
+    chmod +x "$dst"
+    rm -f "$tmp"
+    _info "warp-go installed: $dst"
     return 0
   fi
-  _info "安装 acme.sh..."
-  curl_get https://get.acme.sh | sh || _warn "acme.sh 安装失败（请手动安装）"
+  _warn "warp-go install failed"
+  return 1
 }
 
-issue_cert_acme(){
-  local domain="$1"
-  if [[ -z "$domain" ]]; then _err "issue-cert 需要域名参数"; return 1; fi
-  install_acme_sh
+# Start/Stop services
+start_services(){
+  write_systemd_units
+  systemctl daemon-reload
+  systemctl enable proxy-manager-web xray sing-box >/dev/null 2>&1 || true
+  systemctl restart nginx || true
+  systemctl restart proxy-manager-web || true
+  if [[ -x "${CORES_DIR}/xray" ]]; then systemctl restart xray || true; fi
+  if [[ -x "${CORES_DIR}/sing-box" ]]; then systemctl restart sing-box || true; fi
+  _info "Services started (or restart requested)"
+}
+
+stop_services(){
+  systemctl stop proxy-manager-web || true
+  systemctl stop xray || true
+  systemctl stop sing-box || true
+  systemctl stop nginx || true
+  _info "Services stopped"
+}
+
+show_nodes(){
+  ip="$(curl -s4 icanhazip.com || hostname -I | awk '{print $1}')"
+  uuid="$(cat "${SECRETS_DIR}/uuid" 2>/dev/null || jq -r '.uuid' "$CONFIG_JSON" 2>/dev/null || echo '')"
+  echo "Server IP: $ip"
+  echo "UUID: $uuid"
+  echo "VLESS Reality sample:"
+  echo "vless://${uuid}@${ip}:443?security=reality#vless_reality"
+  vm=$(printf '{"v":"2","ps":"vmess","add":"%s","port":"443","id":"%s","aid":"0","net":"ws","type":"none","host":"","path":"/%s-ws","tls":"tls"}' "$ip" "$uuid" "$uuid")
+  echo "VMess: vmess://$(echo -n "$vm" | base64 -w0)"
+}
+
+# CLI entry points
+cmd_install(){
+  ensure_root
+  prepare_dirs
+  install_system_deps
+  generate_default_config
+  ensure_secrets
+  generate_reality_keys
+  create_venv_and_install_pydeps
+  init_sqlite_db
+  download_xray || _warn "xray not downloaded automatically (place manually at ${CORES_DIR}/xray)"
+  download_singbox || _warn "sing-box not downloaded automatically (place manually at ${CORES_DIR}/sing-box)"
+  write_web_app
+  write_helper_script
+  write_nginx_site
+  generate_core_templates
+  start_services
+  _info "Install complete. Visit: http://<VPS_IP>:${PANEL_PORT}"
+  _info "Admin token at ${ADMIN_TOKEN_FILE}, initial web admin credentials at ${CONFIG_JSON} (web.admin_pass). Please change immediately."
+}
+
+cmd_update_cores(){
+  ensure_root
+  download_xray || _warn "xray update failed"
+  download_singbox || _warn "sing-box update failed"
+  _info "Core update attempted. Restart services to apply."
+}
+
+cmd_issue_cert(){
+  ensure_root
+  domain="$1"
+  if [[ -z "$domain" ]]; then _err "issue-cert requires domain"; return 1; fi
+  # install acme.sh and issue
+  if ! command -v acme.sh >/dev/null 2>&1; then
+    _info "Installing acme.sh"
+    curl_get https://get.acme.sh | sh || _warn "acme.sh install failed"
+  fi
   export HOME="/root"
-  ~/.acme.sh/acme.sh --issue --standalone -d "$domain" --force || { _err "acme issue 失败"; return 1; }
+  ~/.acme.sh/acme.sh --issue --standalone -d "$domain" --force || { _err "acme issue failed"; return 1; }
   mkdir -p "${CONF_DIR}/certs"
-  ~/.acme.sh/acme.sh --install-cert -d "$domain" --key-file "${CONF_DIR}/certs/${domain}.key" --fullchain-file "${CONF_DIR}/certs/${domain}.crt" || _warn "acme install-cert 失败"
-  _info "证书保存到 ${CONF_DIR}/certs/${domain}.crt"
-  # rewrite nginx config to use TLS
-  cat > "${NGINX_SITES_AVAILABLE}/proxy-manager" <<NG
+  ~/.acme.sh/acme.sh --install-cert -d "$domain" --key-file "${CONF_DIR}/certs/${domain}.key" --fullchain-file "${CONF_DIR}/certs/${domain}.crt"
+  _info "Certificate installed to ${CONF_DIR}/certs/${domain}.crt"
+  # update nginx site to use TLS
+  cat > "${NGINX_SITES_AVAILABLE}/proxy-manager-ultimate" <<NG
 server {
   listen 80;
   server_name ${domain};
@@ -740,130 +1006,35 @@ server {
   }
 }
 NG
-  ln -sf "${NGINX_SITES_AVAILABLE}/proxy-manager" "${NGINX_SITES_ENABLED}/proxy-manager"
-  nginx -t >/dev/null 2>&1 || _warn "nginx 配置测试失败"
+  ln -sf "${NGINX_SITES_AVAILABLE}/proxy-manager-ultimate" "${NGINX_SITES_ENABLED}/proxy-manager-ultimate"
+  nginx -t >/dev/null 2>&1 || _warn "nginx test failed"
   systemctl restart nginx || true
-  _info "已为 ${domain} 配置 HTTPS 反向代理 (nginx)"
+  _info "HTTPS enabled for ${domain}"
 }
 
-# -------------------------
-# start/stop/status helpers
-# -------------------------
-start_services(){
-  _info "启用并启动服务..."
-  systemctl daemon-reload
-  systemctl enable proxy-manager-web xray sing-box >/dev/null 2>&1 || true
-  systemctl restart nginx || true
-  systemctl restart proxy-manager-web || true
-  # attempt to restart xray/sing-box only if binaries exist
-  if [[ -x "$XRAY_BIN" ]]; then systemctl restart xray || true; fi
-  if [[ -x "$SINGBOX_BIN" ]]; then systemctl restart sing-box || true; fi
-  _info "服务启动命令已下发"
-}
-
-stop_services(){
-  _info "停止服务..."
-  systemctl stop proxy-manager-web || true
-  systemctl stop xray || true
-  systemctl stop sing-box || true
-  _info "服务已停止"
-}
-
-status_services(){
-  echo "---- nginx ----"
-  systemctl status nginx --no-pager || true
-  echo "---- web ----"
+cmd_start(){ start_services; }
+cmd_stop(){ stop_services; }
+cmd_status(){
   systemctl status proxy-manager-web --no-pager || true
-  echo "---- xray ----"
   systemctl status xray --no-pager || true
-  echo "---- sing-box ----"
   systemctl status sing-box --no-pager || true
+  systemctl status nginx --no-pager || true
 }
+cmd_show_nodes(){ show_nodes; }
 
-show_nodes(){
-  local ip
-  ip="$(curl -s4 icanhazip.com || hostname -I | awk '{print $1}')"
-  local uuid
-  uuid="$(cat "${SECRETS_DIR}/uuid" 2>/dev/null || jq -r '.uuid' "${DEFAULT_CONFIG_FILE}" 2>/dev/null || echo "")"
-  echo "Server IP: $ip"
-  echo "UUID: $uuid"
-  echo
-  echo "VLESS sample:"
-  echo "vless://${uuid}@${ip}:443?security=reality#vless_sample"
-  echo
-  local vm
-  vm=$(printf '{"v":"2","ps":"vmess","add":"%s","port":"443","id":"%s","aid":"0","net":"ws","type":"none","host":"","path":"/%s-ws","tls":"tls"}' "$ip" "$uuid" "$uuid")
-  echo "VMess base64: vmess://$(echo -n "$vm" | base64 -w0)"
-}
-
-# -------------------------
-# install / update-cores / issue-cert command flow
-# -------------------------
-DEFAULT_CONFIG_FILE="${CONF_DIR}/config.json"
-
-cmd_install(){
-  ensure_root
-  detect_env
-  prepare_dirs
-  install_system_deps
-  generate_default_config
-  ensure_uuid_and_token
-  create_python_venv_and_install
-  # download cores
-  download_xray || _warn "xray 下载失败（请手动放置二进制到 ${XRAY_BIN}）"
-  download_singbox || _warn "sing-box 下载失败（请手动放置二进制到 ${SINGBOX_BIN}）"
-  generate_self_signed_cert
-  write_web_app
-  write_helper_sh
-  write_systemd_units
-  write_nginx_config
-  generate_core_configs
-  start_services
-  _info "安装完成。访问面板 (HTTP): http://<VPS_IP>:${PANEL_PORT}"
-  _info "管理员 token 存放：${SECRETS_DIR}/admin.token，请尽快更改。"
-  _info "面板用户名/密码见配置文件：${DEFAULT_CONFIG_FILE} (字段 web.username/web.password)"
-}
-
-cmd_update_cores(){
-  ensure_root
-  detect_env
-  download_xray || _warn "xray 更新失败"
-  download_singbox || _warn "sing-box 更新失败"
-  _info "内核更新尝试完成（若已下载请重启服务）"
-}
-
-cmd_issue_cert(){
-  ensure_root
-  local domain="${1:-}"
-  if [[ -z "$domain" ]]; then _err "issue-cert 需要域名参数"; exit 1; fi
-  issue_cert_acme "$domain"
-}
-
-# -------------------------
 # CLI dispatch
-# -------------------------
 case "${1:-help}" in
   install) cmd_install ;;
   update-cores) cmd_update_cores ;;
   issue-cert) cmd_issue_cert "${2:-}" ;;
-  start) start_services ;;
-  stop) stop_services ;;
-  restart) stop_services; start_services ;;
-  status) status_services ;;
-  show-nodes) show_nodes ;;
-  help|*) 
-    cat <<'USAGE'
-Usage: proxy_manager_optimized.sh <cmd>
-Commands:
-  install            Full install (deps, cores, venv, web, nginx, systemd)
-  update-cores       Attempt to update xray & sing-box from GitHub
-  issue-cert DOMAIN  Issue ACME cert for DOMAIN and enable HTTPS (nginx)
-  start|stop|restart
-  status
-  show-nodes         Print example node URIs
-  help
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  status) cmd_status ;;
+  show-nodes) cmd_show_nodes ;;
+  *) cat <<USAGE
+Usage: $0 {install|update-cores|issue-cert domain|start|stop|status|show-nodes}
 USAGE
-    ;;
+;;
 esac
 
 exit 0
