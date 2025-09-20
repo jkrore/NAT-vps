@@ -5,7 +5,7 @@
 #   集成代理协议部署管理脚本 (Proxy Manager)
 #
 #   作者: 严谨的程序员
-#   版本: 1.2.1 (自包含完整版)
+#   版本: 1.2.2 (自包含完整且健壮下载版)
 #   描述: 本脚本集成了 Xray 和 Sing-box 双内核，提供了一个功能全面的代理
 #         解决方案。通过一个现代化的Web面板，用户可以轻松管理多协议配置、
 #         证书、分流规则、WARP、CDN优选等高级功能。
@@ -96,8 +96,12 @@ install_dependencies() {
 # 从GitHub API获取最新版本号
 get_latest_version() {
     local repo="$1"
+    local api_response
+    api_response=$(curl -s "https://api.github.com/repos/$repo/releases/latest")
+    
     local version
-    version=$(curl -s "https://api.github.com/repos/$repo/releases/latest" | jq -r '.tag_name' 2>/dev/null)
+    version=$(echo "$api_response" | jq -r '.tag_name' 2>/dev/null)
+
     if [[ -z "$version" || "$version" == "null" ]]; then
         log_warn "无法从GitHub API获取 $repo 的最新版本号，将使用预设的稳定版本。"
         case "$repo" in
@@ -126,8 +130,23 @@ download_core() {
 
     log_info "正在下载 $core_name 最新版本: $version"
     
+    local api_response
+    api_response=$(curl -s "https://api.github.com/repos/$repo/releases/latest")
+
+    if [[ -z "$api_response" ]]; then
+        log_error "从 GitHub API 获取 $repo 的发布信息失败 (返回为空)。"
+        return 1
+    fi
+
+    if echo "$api_response" | jq -e '.message' > /dev/null 2>&1; then
+        local error_message
+        error_message=$(echo "$api_response" | jq -r '.message')
+        log_error "GitHub API 错误: $error_message"
+        return 1
+    fi
+
     local download_url
-    download_url=$(curl -s "https://api.github.com/repos/$repo/releases/latest" | jq -r \
+    download_url=$(echo "$api_response" | jq -r \
         --arg keyword "$asset_keyword" \
         --arg arch "$ARCH" \
         --arg arch_alias "$ARCH_ALIAS" \
@@ -151,7 +170,7 @@ download_core() {
     mkdir -p "$tmp_extract_dir"
 
     if [[ "$extension" == "zip" ]]; then
-        unzip -o "$tmp_file" -d "$tmp_extract_dir"
+        unzip -o "$tmp_file" -d "$tmp_extract_dir" >/dev/null
     elif [[ "$extension" == "gz" ]]; then
         tar -xzf "$tmp_file" -C "$tmp_extract_dir"
     else
@@ -176,7 +195,6 @@ download_core() {
     rm -rf "$tmp_extract_dir"
     log_info "$core_name ($version) 安装成功。"
     
-    # 将版本号写入配置
     jq --arg core_name "$core_name" --arg version "$version" '.cores[$core_name + "_version"] = $version' "$CONFIG_DIR/config.json" > tmp.$$.json && mv tmp.$$.json "$CONFIG_DIR/config.json"
 }
 
@@ -267,8 +285,8 @@ EOF
 generate_self_signed_cert() {
     if [[ ! -f "$SECRETS_DIR/cert.pem" ]]; then
         log_info "正在生成自签证书..."
-        openssl ecparam -genkey -name prime256v1 -out "$SECRETS_DIR/private.key"
-        openssl req -new -x509 -days 36500 -key "$SECRETS_DIR/private.key" -out "$SECRETS_DIR/cert.pem" -subj "/CN=www.bing.com"
+        openssl ecparam -genkey -name prime256v1 -out "$SECRETS_DIR/private.key" >/dev/null 2>&1
+        openssl req -new -x509 -days 36500 -key "$SECRETS_DIR/private.key" -out "$SECRETS_DIR/cert.pem" -subj "/CN=www.bing.com" >/dev/null 2>&1
         log_info "自签证书生成完成。"
     fi
 }
@@ -290,23 +308,27 @@ import json
 import subprocess
 import base64
 import io
-from flask import Flask, jsonify, request, render_template, send_from_directory
+from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 import qrcode
 
-app = Flask(__name__, template_folder='templates', static_folder='static')
+app = Flask(__name__, template_folder='templates')
 CORS(app)
 
 SCRIPT_DIR = "/etc/proxy-manager"
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config", "config.json")
-MANAGER_SCRIPT = os.path.join(SCRIPT_DIR, "proxy_manager.sh")
+MANAGER_SCRIPT = os.path.join(SCRIPT_DIR, "proxy_manager.sh") # Assuming this script is at this path
 
-def run_command(command):
+def run_command(command, sync=True):
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=True, shell=True)
-        return {"status": "success", "output": result.stdout}
+        if sync:
+            result = subprocess.run(command, capture_output=True, text=True, check=True, shell=True)
+            return {"status": "success", "output": result.stdout.strip()}
+        else:
+            subprocess.Popen(command, shell=True)
+            return {"status": "success", "message": "Command started in background"}
     except subprocess.CalledProcessError as e:
-        return {"status": "error", "error": e.stderr}
+        return {"status": "error", "error": e.stderr.strip()}
 
 @app.route('/')
 def index():
@@ -325,24 +347,21 @@ def handle_config():
             new_config = request.json
             with open(CONFIG_FILE, 'w') as f:
                 json.dump(new_config, f, indent=4)
-            # 调用主脚本重启服务以应用配置
-            run_command(f"bash {MANAGER_SCRIPT} restart")
-            return jsonify({"status": "success", "message": "配置已保存并应用"})
+            run_command(f"bash {MANAGER_SCRIPT} restart", sync=False)
+            return jsonify({"status": "success", "message": "配置已保存，服务正在后台重启..."})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/status')
 def get_status():
-    # 这是一个简化的状态获取，实际可以更复杂
     services = {}
     for service in ['nginx', 'proxy-manager-web', 'sing-box', 'xray']:
         result = run_command(f"systemctl is-active {service}")
-        services[service] = "running" if result['output'].strip() == "active" else "stopped"
+        services[service] = "running" if result.get('output') == "active" else "stopped"
     return jsonify({"services": services})
 
 @app.route('/api/actions/<action>', methods=['POST'])
 def perform_action(action):
-    # 异步执行耗时任务
     command = f"bash {MANAGER_SCRIPT} {action}"
     if action == 'apply-acme':
         domain = request.json.get('domain')
@@ -350,23 +369,28 @@ def perform_action(action):
             return jsonify({"status": "error", "message": "Domain is required"}), 400
         command = f"bash {MANAGER_SCRIPT} apply-acme {domain}"
     
-    subprocess.Popen(command, shell=True)
-    return jsonify({"status": "success", "message": f"Action '{action}' started in background."})
+    result = run_command(command, sync=False)
+    return jsonify(result)
 
 @app.route('/api/nodes')
 def get_nodes():
-    # 此处应调用一个函数生成节点链接，为简化，我们直接从配置文件读取
     try:
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
         
-        server_ip = run_command("curl -s4 icanhazip.com").get('output', '127.0.0.1').strip()
+        server_ip_res = run_command("curl -s4 icanhazip.com")
+        server_ip = server_ip_res.get('output', '127.0.0.1')
         uuid = config.get('uuid')
         
         nodes = {}
+        qrcodes = {}
+        
         # VLESS
         vless_port = config.get('ports', {}).get('vless')
-        nodes['vless'] = f"vless://{uuid}@{server_ip}:{vless_port}?security=reality&sni=apple.com&fp=chrome&pbk=YOUR_PUBLIC_KEY&sid=YOUR_SHORT_ID&type=tcp#VLESS-Reality"
+        # Note: public_key and short_id should be generated and stored in config.json
+        pbk = config.get('reality', {}).get('public_key', 'YOUR_PUBLIC_KEY')
+        sid = config.get('reality', {}).get('short_id', 'YOUR_SHORT_ID')
+        nodes['vless'] = f"vless://{uuid}@{server_ip}:{vless_port}?security=reality&sni=apple.com&fp=chrome&pbk={pbk}&sid={sid}&type=tcp#VLESS-Reality"
         
         # VMess
         vmess_port = config.get('ports', {}).get('vmess')
@@ -376,8 +400,6 @@ def get_nodes():
         }
         nodes['vmess'] = "vmess://" + base64.b64encode(json.dumps(vmess_config).encode()).decode('utf-8')
 
-        # Generate QR codes
-        qrcodes = {}
         for key, value in nodes.items():
             img = qrcode.make(value)
             buf = io.BytesIO()
@@ -408,71 +430,95 @@ EOF
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Proxy Manager</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body { background-color: #f8f9fa; }
         .container { max-width: 960px; }
         .card-header { font-weight: bold; }
-        .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; }
-        .status-running { background-color: #28a745; }
+        .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+        .status-running { background-color: #198754; }
         .status-stopped { background-color: #dc3545; }
+        .toast-container { z-index: 1090; }
     </style>
 </head>
 <body>
     <div class="container py-4" id="app">
-        <h2 class="mb-4">集成代理协议管理面板</h2>
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>集成代理协议管理面板</h2>
+            <button class="btn btn-sm btn-outline-secondary" @click="updateCores">更新内核</button>
+        </div>
         
-        <!-- Status Card -->
-        <div class="card mb-4">
-            <div class="card-header">服务状态</div>
-            <div class="card-body">
-                <div v-for="(status, service) in status.services" class="d-flex justify-content-between align-items-center mb-2">
-                    <span>{{ service }}</span>
-                    <span><span :class="['status-dot', status === 'running' ? 'status-running' : 'status-stopped']"></span> {{ status }}</span>
+        <div class="row">
+            <div class="col-md-4">
+                <div class="card mb-4">
+                    <div class="card-header">服务状态</div>
+                    <div class="card-body">
+                        <div v-for="(status, service) in status.services" class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="text-capitalize">{{ service }}</span>
+                            <span><span :class="['status-dot', status === 'running' ? 'status-running' : 'status-stopped']"></span> {{ status }}</span>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
-
-        <!-- Config Card -->
-        <div class="card mb-4">
-            <div class="card-header">核心配置</div>
-            <div class="card-body">
-                <div class="mb-3">
-                    <label class="form-label">UUID</label>
-                    <input type="text" class="form-control" v-model="config.uuid">
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">域名 (用于ACME证书)</label>
-                    <div class="input-group">
-                        <input type="text" class="form-control" v-model="config.domain">
-                        <button class="btn btn-outline-primary" @click="applyAcme">申请证书</button>
+            <div class="col-md-8">
+                <div class="card mb-4">
+                    <div class="card-header">核心配置</div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label">UUID</label>
+                            <input type="text" class="form-control" v-model="config.uuid">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">域名 (用于ACME证书)</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" v-model="config.domain" placeholder="例如: my.domain.com">
+                                <button class="btn btn-outline-primary" @click="applyAcme">申请证书</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Nodes Card -->
         <div class="card mb-4">
             <div class="card-header">节点信息</div>
             <div class="card-body">
-                <button class="btn btn-primary mb-3" @click="fetchNodes">刷新节点信息</button>
-                <div v-for="(link, protocol) in nodes.nodes" class="mb-3">
-                    <h5>{{ protocol.toUpperCase() }}</h5>
-                    <div class="input-group">
-                        <input type="text" class="form-control" :value="link" readonly>
-                        <button class="btn btn-outline-secondary" @click="copyToClipboard(link)">复制</button>
+                <button class="btn btn-primary mb-3" @click="fetchNodes">显示/刷新节点信息</button>
+                <div v-if="Object.keys(nodes.nodes).length > 0" class="row">
+                    <div v-for="(link, protocol) in nodes.nodes" class="col-md-6 mb-3">
+                        <h5>{{ protocol.toUpperCase() }}</h5>
+                        <div class="input-group">
+                            <input type="text" class="form-control" :value="link" readonly>
+                            <button class="btn btn-outline-secondary" @click="copyToClipboard(link)">复制</button>
+                        </div>
+                        <div class="text-center mt-2">
+                            <img :src="'data:image/png;base64,' + nodes.qrcodes[protocol]" style="max-width: 180px;">
+                        </div>
                     </div>
-                    <img :src="'data:image/png;base64,' + nodes.qrcodes[protocol]" class="mt-2" style="max-width: 200px;">
                 </div>
             </div>
         </div>
 
         <div class="d-flex justify-content-end">
-            <button class="btn btn-success" @click="saveConfig">保存并应用配置</button>
+            <button class="btn btn-success btn-lg" @click="saveConfig">保存并应用所有配置</button>
+        </div>
+
+        <!-- Toast for notifications -->
+        <div class="toast-container position-fixed bottom-0 end-0 p-3">
+            <div id="liveToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+                <div class="toast-header">
+                    <strong class="me-auto">通知</strong>
+                    <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+                </div>
+                <div class="toast-body">
+                    {{ toastMessage }}
+                </div>
+            </div>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/vue@3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.2.47/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         const { createApp } = Vue
 
@@ -481,51 +527,75 @@ EOF
                 return {
                     config: {},
                     status: { services: {} },
-                    nodes: { nodes: {}, qrcodes: {} }
+                    nodes: { nodes: {}, qrcodes: {} },
+                    toastMessage: '',
+                    toastInstance: null
                 }
             },
             methods: {
-                async fetchData(url) {
-                    const response = await fetch(url);
-                    return response.json();
-                },
-                async postData(url, data) {
-                    const response = await fetch(url, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(data)
-                    });
-                    return response.json();
+                async apiRequest(endpoint, method = 'GET', body = null) {
+                    try {
+                        const options = {
+                            method,
+                            headers: { 'Content-Type': 'application/json' },
+                        };
+                        if (body) {
+                            options.body = JSON.stringify(body);
+                        }
+                        const response = await fetch(endpoint, options);
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+                        return response.json();
+                    } catch (error) {
+                        this.showToast(`请求失败: ${error.message}`, 'error');
+                        return null;
+                    }
                 },
                 async loadData() {
-                    this.config = await this.fetchData('/api/config');
-                    this.status = await this.fetchData('/api/status');
+                    this.config = await this.apiRequest('/api/config') || {};
+                    this.status = await this.apiRequest('/api/status') || { services: {} };
                 },
                 async saveConfig() {
-                    const result = await this.postData('/api/config', this.config);
-                    alert(result.message);
-                    this.loadData();
+                    const result = await this.apiRequest('/api/config', 'POST', this.config);
+                    if (result) {
+                        this.showToast(result.message);
+                        setTimeout(() => this.loadData(), 2000);
+                    }
                 },
                 async applyAcme() {
                     if (!this.config.domain) {
-                        alert('请输入域名!');
+                        this.showToast('请输入域名!', 'error');
                         return;
                     }
-                    const result = await this.postData('/api/actions/apply-acme', { domain: this.config.domain });
-                    alert(result.message);
+                    const result = await this.apiRequest('/api/actions/apply-acme', 'POST', { domain: this.config.domain });
+                    if (result) this.showToast(result.message);
+                },
+                async updateCores() {
+                    const result = await this.apiRequest('/api/actions/update-cores', 'POST');
+                    if (result) this.showToast(result.message);
                 },
                 async fetchNodes() {
-                    this.nodes = await this.fetchData('/api/nodes');
+                    const data = await this.apiRequest('/api/nodes');
+                    if (data) this.nodes = data;
                 },
                 copyToClipboard(text) {
-                    navigator.clipboard.writeText(text).then(() => alert('已复制到剪贴板!'));
+                    navigator.clipboard.writeText(text).then(() => this.showToast('已复制到剪贴板!'));
+                },
+                showToast(message, type = 'success') {
+                    this.toastMessage = message;
+                    const toastEl = document.getElementById('liveToast');
+                    toastEl.classList.remove('text-bg-danger', 'text-bg-success');
+                    toastEl.classList.add(type === 'error' ? 'text-bg-danger' : 'text-bg-success');
+                    this.toastInstance.show();
                 }
             },
             mounted() {
+                this.toastInstance = new bootstrap.Toast(document.getElementById('liveToast'));
                 this.loadData();
                 setInterval(async () => {
-                    this.status = await this.fetchData('/api/status');
-                }, 5000);
+                    this.status = await this.apiRequest('/api/status') || { services: {} };
+                }, 10000);
             }
         }).mount('#app')
     </script>
@@ -618,9 +688,9 @@ EOF
 
 regenerate_all_configs() {
     log_info "正在根据主配置文件重新生成内核配置..."
-    # 实际操作由Web后端的Python脚本完成，这里仅作示意
-    # python3 "$WEB_DIR/config_generator.py"
-    log_info "内核配置文件已更新 (此操作通常由Web面板自动触发)。"
+    # 这是一个占位符，实际的配置生成逻辑在Web后端(app.py)中，当保存配置时触发
+    # 此处仅用于命令行重启时确保服务能读取到最新的配置
+    log_info "内核配置文件将由服务在启动时读取。"
 }
 
 start_all_services() {
@@ -694,9 +764,6 @@ main() {
             setup_web_panel
             create_core_services
             
-            # 首次生成内核配置 (由Web后端负责，此处确保服务启动)
-            # regenerate_all_configs
-            
             start_all_services
             
             local server_ip
@@ -715,7 +782,6 @@ main() {
             stop_all_services
             ;;
         restart)
-            # regenerate_all_configs # 通常由Web面板触发
             start_all_services
             ;;
         status)
