@@ -1,811 +1,409 @@
-#!/usr/bin/env bash
-#
+#!/bin/bash
+
 # ==============================================================================
-# 
-#   集成代理协议部署管理脚本 (Proxy Manager Ultimate)
 #
-#   作者: 严谨的程序员
-#   版本: 1.2.0 (Sing-box 终极语法修正版)
-#   描述: 本脚本集成了 Sing-box 内核，并提供了一个功能全面的代理解决
-#         方案。通过一个现代化的Web面板，用户可以轻松管理多协议配置、
-#         ACME证书、分流规则、WARP、CDN优选、SOCKS5导入等高级功能。
-#         此版本已对所有Bash语法进行严格审查和修复。
+#       集成代理协议管理面板 (Sing-box 终极版) - 一键部署脚本
+#
+#   功能:
+#   1. 安装并配置 Nginx, Python (Flask) 环境。
+#   2. 部署一个现代化的、深色主题的前端管理界面。
+#   3. 部署一个提供 API 的 Python Flask 后端服务。
+#   4. 配置 systemd 服务，确保后端持久化运行。
+#   5. 自动配置 Nginx 反向代理，并清理潜在的冲突配置。
+#   6. 提供色彩丰富的、可视化的安装流程。
 #
 # ==============================================================================
 
-# --- 全局设置 ---
-export LANG=en_US.UTF-8
-set -euo pipefail
-IFS=$'\n\t'
+# 脚本出错时立即退出
+set -e
 
-# --- 颜色定义 ---
-RED='\033[0;31m'
+# --- 定义颜色变量 ---
 GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;36m'
-PLAIN='\033[0m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
 
-# --- 脚本变量 ---
-BASE_DIR="/etc/proxy-manager"
-CONFIG_DIR="$BASE_DIR/config"
-CORES_DIR="$BASE_DIR/cores"
-WEB_DIR="$BASE_DIR/web"
-LOG_DIR="$BASE_DIR/logs"
-SECRETS_DIR="$BASE_DIR/secrets"
-VENV_DIR="$BASE_DIR/venv"
-SYSTEMD_DIR="/etc/systemd/system"
-NGINX_CONF_DIR="/etc/nginx/sites-available"
-NGINX_ENABLED_DIR="/etc/nginx/sites-enabled"
-ACME_SH_INSTALL_DIR="/root/.acme.sh"
-
-# --- 日志函数 ---
-log_info() { echo -e "${GREEN}[INFO] $(date +'%Y-%m-%d %H:%M:%S') - $1${PLAIN}"; }
-log_warn() { echo -e "${YELLOW}[WARN] $(date +'%Y-%m-%d %H:%M:%S') - $1${PLAIN}"; }
-log_error() { echo -e "${RED}[ERROR] $(date +'%Y-%m-%d %H:%M:%S') - $1${PLAIN}" >&2; }
-
-# --- 辅助函数 ---
-
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        log_error "请以root或sudo权限运行此脚本。"
-        exit 1
-    fi
+# --- 定义消息打印函数 ---
+info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
 }
 
-detect_system() {
-    if [[ -f /etc/os-release ]]; then
-        source /etc/os-release
-        OS_ID="${ID,,}"
-    else
-        OS_ID=$(uname -s | tr '[:upper:]' '[:lower:]')
-    fi
-
-    case $(uname -m) in
-        x86_64) ARCH="amd64";;
-        aarch64) ARCH="arm64";;
-        armv7l) ARCH="armv7";;
-        *) log_error "不支持的系统架构: $(uname -m)"; exit 1;;
-    esac
-    log_info "检测到系统: $OS_ID, 架构: $ARCH"
+success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
-check_dependencies() {
-    log_info "正在检查核心依赖..."
-    local missing_deps=()
-    local deps=("curl" "wget" "jq" "nginx" "python3" "unzip" "tar" "socat")
-    for dep in "${deps[@]}"; do
-        if ! command -v "$dep" &> /dev/null; then
-            missing_deps+=("$dep")
-        fi
-    done
-    if [[ ${#missing_deps[@]} -gt 0 ]]; then
-        log_error "缺少核心依赖: ${missing_deps[*]}. 请先安装它们。"
-        log_info "Debian/Ubuntu: sudo apt-get install ${missing_deps[*]}"
-        log_info "CentOS/RHEL: sudo yum install ${missing_deps[*]}"
-        exit 1
-    fi
-    log_info "核心依赖检查通过。"
+warn() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+    exit 1
 }
 
 
-install_dependencies() {
-    log_info "正在安装/更新必要的系统依赖..."
-    if [[ "$OS_ID" =~ (debian|ubuntu) ]]; then
-        apt-get update -y
-        apt-get install -y curl wget jq openssl uuid-runtime nginx python3-venv python3-pip net-tools iproute2 socat unzip git
-    elif [[ "$OS_ID" =~ (centos|rhel|fedora) ]]; then
-        yum install -y epel-release || log_warn "epel-release 安装失败，某些包可能无法找到。"
-        yum install -y curl wget jq openssl util-linux nginx python3 python3-pip net-tools iproute socat unzip git
-    else
-        log_warn "未知的操作系统发行版。请确保已手动安装 curl, wget, jq, openssl, nginx, python3-venv, net-tools, socat, unzip, git。"
-    fi
-    log_info "系统依赖安装完成。"
-}
-
-get_latest_version() {
-    local repo="$1"
-    local api_response
-    api_response=$(curl -s "https://api.github.com/repos/$repo/releases/latest")
+# --- 1. 创建后端 Python Flask 应用 ---
+create_backend_app() {
+    info "开始创建后端服务..."
     
-    local version
-    version=$(echo "$api_response" | jq -r '.tag_name' 2>/dev/null)
-
-    if [[ -z "$version" || "$version" == "null" ]]; then
-        log_warn "无法从GitHub API获取 $repo 的最新版本号，将使用预设的稳定版本。"
-        case "$repo" in
-            "SagerNet/sing-box") echo "v1.8.0";; 
-            *) echo "";;
-        esac
-    else
-        echo "$version"
-    fi
-}
-
-download_sing_box() {
-    local repo="SagerNet/sing-box"
-    local version
-    version=$(get_latest_version "$repo")
-
-    if [[ -z "$version" ]]; then
-        log_error "无法获取 Sing-box 的版本号，跳过下载。"
-        return 1
-    fi
-
-    log_info "正在下载 Sing-box 最新版本: $version"
+    # 创建应用目录和虚拟环境
+    mkdir -p /opt/proxy-manager
+    python3 -m venv /opt/proxy-manager/venv
     
-    local api_response
-    api_response=$(curl -s --retry 3 "https://api.github.com/repos/$repo/releases/tags/$version")
-
-    if [[ -z "$api_response" || "$(echo "$api_response" | jq -r '.message' 2>/dev/null)" != "null" ]]; then
-        log_error "从 GitHub API 获取 $repo 的发布信息失败。"
-        return 1
-    fi
-
-    local download_url
-    download_url=$(echo "$api_response" | jq -r \
-        --arg arch "$ARCH" \
-        '.assets[] | select(.name | test("linux")) | select(.name | test($arch)) | .browser_download_url' | head -n 1)
-
-    if [[ -z "$download_url" ]]; then
-        log_error "在GitHub Releases中未找到适用于 $ARCH 架构的 Sing-box 文件。"
-        return 1
-    fi
-
-    local tmp_file="/tmp/sing-box.tar.gz"
-    if ! curl -L --retry 3 -o "$tmp_file" "$download_url"; then
-        log_error "Sing-box 下载失败。"
-        rm -f "$tmp_file"
-        return 1
-    fi
-
-    local tmp_extract_dir="/tmp/sing-box_extracted"
-    mkdir -p "$tmp_extract_dir"
-    if ! tar -xzf "$tmp_file" -C "$tmp_extract_dir"; then
-        log_error "解压 Sing-box 失败。"
-        rm -f "$tmp_file"; rm -rf "$tmp_extract_dir"
-        return 1
-    fi
-
-    local binary_path
-    binary_path=$(find "$tmp_extract_dir" -type f -name "sing-box" | head -n 1)
-    if [[ -n "$binary_path" ]]; then
-        if ! mv "$binary_path" "$CORES_DIR/"; then
-            log_error "移动 Sing-box 可执行文件失败。"
-            return 1
-        fi
-    else
-        log_error "在解压的文件中未找到 'sing-box'。"
-        rm -f "$tmp_file"; rm -rf "$tmp_extract_dir"
-        return 1
-    fi
-
-    chmod +x "$CORES_DIR/sing-box"
-    rm -f "$tmp_file"; rm -rf "$tmp_extract_dir"
+    # 在虚拟环境中安装 Flask
+    source /opt/proxy-manager/venv/bin/activate
+    pip install Flask > /dev/null 2>&1
+    deactivate
     
-    local installed_version
-    installed_version=$($CORES_DIR/sing-box version | awk '/version/{print $NF}')
-    log_info "Sing-box ($installed_version) 安装成功。"
-    
-    # Update config with version
-    if [[ -f "$CONFIG_DIR/config.json" ]]; then
-      jq --arg version "$installed_version" '.cores.singbox_version = $version' "$CONFIG_DIR/config.json" > tmp.$$.json && mv tmp.$$.json "$CONFIG_DIR/config.json"
-    fi
-}
-
-
-# --- 核心安装与配置 ---
-
-initialize_setup() {
-    log_info "正在初始化目录结构和默认配置..."
-    mkdir -p "$CONFIG_DIR" "$CORES_DIR" "$WEB_DIR" "$LOG_DIR" "$SECRETS_DIR"
-
-    # FIX: Corrected if statement syntax from `{` to `then` and `}` to `fi`
-    if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
-        local new_uuid
-        new_uuid=$(uuidgen)
-        local web_pass
-        web_pass=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)
-        
-        # Generate Reality keypair
-        "$CORES_DIR/sing-box" generate reality-keypair > /tmp/reality_keys.txt
-        local private_key
-        private_key=$(grep "PrivateKey" /tmp/reality_keys.txt | awk '{print $2}' | tr -d '"')
-        local public_key
-        public_key=$(grep "PublicKey" /tmp/reality_keys.txt | awk '{print $2}' | tr -d '"')
-        local short_id
-        short_id=$("$CORES_DIR/sing-box" generate rand --hex 8)
-        rm -f /tmp/reality_keys.txt
-
-        cat > "$CONFIG_DIR/config.json" <<EOF
-{
-    "uuid": "${new_uuid}",
-    "domain": "",
-    "certificates": {
-        "enabled": false,
-        "cert_path": "${SECRETS_DIR}/cert.pem",
-        "key_path": "${SECRETS_DIR}/private.key"
-    },
-    "ports": {
-        "vless": 20001,
-        "vmess": 20002,
-        "hysteria2": 20003,
-        "tuic": 20004,
-        "shadowsocks": 20005
-    },
-    "multiplexing": {
-        "hysteria2_ports": "",
-        "tuic_ports": ""
-    },
-    "reality": {
-        "private_key": "${private_key}",
-        "public_key": "${public_key}",
-        "short_id": "${short_id}",
-        "server_name": "apple.com"
-    },
-    "warp": {
-        "enabled": false,
-        "mode": "local",
-        "country": "US"
-    },
-    "routing": {
-        "global_outbound": "direct",
-        "rules": [
-            { "enabled": true, "name": "Netflix", "domains": ["netflix.com", "nflxvideo.net"], "outbound": "direct" },
-            { "enabled": true, "name": "OpenAI/ChatGPT", "domains": ["openai.com", "chat.openai.com"], "outbound": "warp" }
-        ]
-    },
-    "cdn": {
-        "enabled": false,
-        "ips": ["104.16.124.96"]
-    },
-    "proxies": {
-        "custom_outbounds": []
-    },
-    "cores": {
-        "singbox_version": "N/A",
-        "auto_update": true
-    },
-    "web": {
-        "port": 54321,
-        "username": "admin",
-        "password": "${web_pass}"
-    }
-}
-EOF
-        log_info "默认配置已生成。"
-        log_info "Web面板登录名: admin"
-        log_info "Web面板密码: ${YELLOW}${web_pass}${GREEN} (请妥善保管!)${PLAIN}"
-    fi
-}
-
-generate_self_signed_cert() {
-    if [[ ! -f "$SECRETS_DIR/cert.pem" ]]; then
-        log_info "正在生成自签证书..."
-        openssl ecparam -genkey -name prime256v1 -out "$SECRETS_DIR/private.key" >/dev/null 2>&1
-        openssl req -new -x509 -days 36500 -key "$SECRETS_DIR/private.key" -out "$SECRETS_DIR/cert.pem" -subj "/CN=www.bing.com" >/dev/null 2>&1
-        log_info "自签证书生成完成。"
-    fi
-}
-
-setup_web_panel() {
-    log_info "正在设置Web管理面板..."
-
-    if [[ ! -d "$VENV_DIR" ]]; then python3 -m venv "$VENV_DIR"; fi
-    "$VENV_DIR/bin/pip" install --upgrade pip >/dev/null
-    if ! "$VENV_DIR/bin/pip" install flask flask-cors qrcode[pil] requests >/dev/null; then
-        log_error "Python依赖安装失败。请检查pip和网络。"
-        return 1
-    fi
-
-    # 写入Flask后端 (app.py)
-    cat > "$WEB_DIR/app.py" <<'EOF'
-# === BEGIN app.py ===
-import os
-import sys
-import json
+    # 写入 Flask 应用代码
+    cat <<'EOF' > /opt/proxy-manager/app.py
 import subprocess
-import base64
-import io
-import re
-from flask import Flask, jsonify, request, render_template, send_from_directory
-from flask_cors import CORS
-import qrcode
-import requests
+from flask import Flask, jsonify, send_from_directory
 
-app = Flask(__name__, template_folder='templates')
-CORS(app)
+app = Flask(__name__, static_folder='.', static_url_path='')
 
-BASE_DIR_ENV = "/etc/proxy-manager"
-CONFIG_FILE = os.path.join(BASE_DIR_ENV, "config", "config.json")
-MANAGER_SCRIPT = os.path.join(BASE_DIR_ENV, "proxy_manager.sh") 
-
-def run_command(command, sync=True):
-    try:
-        if sync:
-            result = subprocess.run(command, capture_output=True, text=True, check=True, shell=True)
-            return {"status": "success", "output": result.stdout.strip()}
-        else:
-            subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return {"status": "success", "message": "命令已在后台启动"}
-    except subprocess.CalledProcessError as e:
-        return {"status": "error", "error": e.stderr.strip() or e.stdout.strip()}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
-
+# 主页路由，提供 index.html
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return send_from_directory('.', 'index.html')
 
-@app.route('/api/config', methods=['GET', 'POST'])
-def handle_config():
-    if request.method == 'GET':
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                return jsonify(json.load(f))
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
-    elif request.method == 'POST':
-        try:
-            new_config = request.json
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(new_config, f, indent=4)
-            return jsonify({"status": "success", "message": "配置已保存。请点击'保存并应用'来重启服务。"})
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
-
+# API 路由，用于获取服务状态
 @app.route('/api/status')
 def get_status():
-    services = {}
-    for service in ['nginx', 'proxy-manager-web', 'sing-box']:
-        result = run_command(f"systemctl is-active {service}")
-        services[service] = "running" if result.get('output') == "active" else "stopped"
-    return jsonify({"services": services})
-
-@app.route('/api/actions/<action>', methods=['POST'])
-def perform_action(action):
-    command = f"sudo bash {MANAGER_SCRIPT} {action}"
-    if action == 'apply-acme':
-        domain = request.json.get('domain')
-        if not domain:
-            return jsonify({"status": "error", "message": "Domain is required"}), 400
+    services = ['nginx', 'sing-box', 'proxy-manager-backend']
+    statuses = {}
+    for service in services:
         try:
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-            config['domain'] = domain
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(config, f, indent=4)
+            # 使用 systemctl is-active 检查服务状态
+            result = subprocess.run(
+                ['systemctl', 'is-active', service],
+                capture_output=True, text=True, check=False
+            )
+            status = result.stdout.strip()
+            statuses[service] = 'active' if status == 'active' else 'inactive'
         except Exception as e:
-            return jsonify({"status": "error", "message": f"Failed to save domain to config: {e}"}), 500
-    
-    result = run_command(command, sync=False)
-    return jsonify(result)
+            statuses[service] = 'error'
 
-@app.route('/api/ip-scanner/list')
-def get_ip_list():
-    ip_type = request.args.get('loadIPs', 'official')
-    port = request.args.get('port', '443')
-    url = f"https://cmvip.godeluoo.eu.org/jk/bestip?loadIPs={ip_type}&port={port}"
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return response.text
-    except requests.RequestException as e:
-        return f"Error fetching IP list: {e}", 500
-
-@app.route('/api/proxies/import', methods=['POST'])
-def import_proxies():
-    data = request.json
-    proxy_list_text = data.get('proxies', '')
-    
-    parsed_proxies = []
-    failed_lines = 0
-    
-    for line in proxy_list_text.strip().split('\n'):
-        line = line.strip()
-        if not line: continue
-        
-        proxy = {}
-        if '|' in line:
-            parts = [p.strip() for p in line.split('|')]
-            try:
-                ip_port = parts[0].split(':')
-                user_pass = parts[1].split(':')
-                location_part = parts[2].split(':', 1)[1].strip()
-                
-                proxy['ip'] = ip_port[0]
-                proxy['port'] = int(ip_port[1])
-                proxy['user'] = user_pass[0]
-                proxy['pass'] = user_pass[1]
-                proxy['location'] = location_part
-                proxy['name'] = f"SOCKS_{location_part.split('[')[0].strip()}"
-                parsed_proxies.append(proxy)
-            except Exception:
-                failed_lines += 1
-        elif line.count(':') == 3:
-            try:
-                ip, port, user, password = line.split(':')
-                proxy['ip'] = ip
-                proxy['port'] = int(port)
-                proxy['user'] = user
-                proxy['pass'] = password
-                proxy['location'] = f"Location for {ip}"
-                proxy['name'] = f"SOCKS_{ip.replace('.', '_')}"
-                parsed_proxies.append(proxy)
-            except Exception:
-                failed_lines += 1
-        else:
-            failed_lines += 1
-
-    try:
-        with open(CONFIG_FILE, 'r') as f:
-            config = json.load(f)
-        
-        if 'proxies' not in config: config['proxies'] = {}
-        config['proxies']['custom_outbounds'] = parsed_proxies
-        
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=4)
-            
-        return jsonify({
-            "status": "success",
-            "message": f"成功导入 {len(parsed_proxies)} 个代理，{failed_lines} 行失败。"
-        })
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    return jsonify(statuses)
 
 if __name__ == '__main__':
-    port = 54321
-    try:
-        with open(CONFIG_FILE, 'r') as f:
-            config = json.load(f)
-            port = config.get('web', {}).get('port', 54321)
-    except:
-        pass
-    app.run(host='127.0.0.1', port=port)
-# === END app.py ===
+    # 监听 0.0.0.0:54321，允许外部访问（由 Nginx 代理）
+    app.run(host='0.0.0.0', port=54321)
 EOF
+    success "后端 Python 应用创建完成。"
+}
 
-    # 写入HTML模板 (index.html)
-    mkdir -p "$WEB_DIR/templates"
-    cat > "$WEB_DIR/templates/index.html" <<'EOF'
-# === BEGIN index.html ===
+
+# --- 2. 创建前端 HTML 界面 ---
+create_frontend_html() {
+    info "开始创建前端管理界面..."
+    cat <<'EOF' > /opt/proxy-manager/index.html
 <!DOCTYPE html>
-<html lang="zh-CN" data-bs-theme="light">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Proxy Manager Ultimate</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <title>集成代理协议管理面板 (Sing-box 终极版)</title>
     <style>
-        body { background-color: #f8f9fa; }
-        .container { max-width: 1140px; }
-        .card { transition: box-shadow .3s; }
-        .card:hover { box-shadow: 0 .5rem 1rem rgba(0,0,0,.15); }
-        .status-dot { height: 12px; width: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; }
-        .status-running { background-color: #198754; }
-        .status-stopped { background-color: #dc3545; }
-        .toast-container { z-index: 1090; }
-        .table-responsive { max-height: 400px; }
+        :root {
+            --bg-color: #1a1a1a;
+            --text-color: #e0e0e0;
+            --primary-color: #007bff;
+            --card-bg-color: #2c2c2c;
+            --border-color: #444;
+            --success-color: #28a745;
+            --error-color: #dc3545;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+        }
+        .container {
+            width: 100%;
+            max-width: 800px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1rem;
+        }
+        h1 {
+            font-size: 1.8rem;
+            color: var(--primary-color);
+            margin: 0;
+        }
+        .card {
+            background-color: var(--card-bg-color);
+            border-radius: 8px;
+            padding: 1.5rem;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+        .card-title {
+            font-size: 1.2rem;
+            font-weight: 500;
+            margin: 0;
+        }
+        .btn {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 0.6rem 1.2rem;
+            border-radius: 5px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        .btn:hover {
+            background-color: #0056b3;
+        }
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+        .status-item {
+            background-color: #3a3a3a;
+            padding: 1rem;
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .status-item span:first-child {
+            font-weight: 500;
+        }
+        .status-light {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .status-light.active {
+            background-color: var(--success-color);
+            box-shadow: 0 0 8px var(--success-color);
+        }
+        .status-light.inactive {
+            background-color: var(--error-color);
+            box-shadow: 0 0 8px var(--error-color);
+        }
+        .status-light.unknown {
+            background-color: #6c757d;
+        }
     </style>
 </head>
 <body>
-    <div class="container py-4" id="app">
-        <header class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom">
-            <h2 class="mb-0">集成代理协议管理面板 (Sing-box 终极版)</h2>
-            <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" id="darkModeSwitch" @change="toggleDarkMode">
-                <label class="form-check-label" for="darkModeSwitch">暗黑模式</label>
-            </div>
+    <div class="container">
+        <header>
+            <h1>集成代理协议管理面板 (Sing-box 终极版)</h1>
         </header>
-
-        <ul class="nav nav-pills mb-3" id="mainTab" role="tablist">
-            <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#dashboard-pane" type="button">仪表盘</button></li>
-            <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#config-pane" type="button">通用配置</button></li>
-            <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#nodes-pane" type="button">节点信息</button></li>
-            <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#cdn-pane" type="button">CDN优选</button></li>
-            <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#proxy-import-pane" type="button">代理导入</button></li>
-        </ul>
-
-        <div class="tab-content" id="mainTabContent">
-            <div class="tab-pane fade show active" id="dashboard-pane" role="tabpanel">
-                <div class="row">
-                    <div class="col-md-6">
-                        <div class="card mb-4">
-                            <div class="card-header d-flex justify-content-between align-items-center">
-                                <span>服务状态</span>
-                                <button class="btn btn-sm btn-outline-secondary" @click="loadData">刷新</button>
-                            </div>
-                            <ul class="list-group list-group-flush">
-                                <li class="list-group-item d-flex justify-content-between align-items-center" v-for="(s, name) in status.services">
-                                    <span class="text-capitalize">{{ name }}</span>
-                                    <span><span :class="['status-dot', s === 'running' ? 'status-running' : 'status-stopped']"></span>{{ s }}</span>
-                                </li>
-                            </ul>
-                            <div class="card-footer"><button class="btn btn-sm btn-outline-warning" @click="performAction('restart')">重启所有服务</button></div>
-                        </div>
-                    </div>
+        <main>
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">核心服务状态</h2>
+                    <button id="refreshBtn" class="btn">刷新状态</button>
+                </div>
+                <div id="statusGrid" class="status-grid">
+                    <!-- 状态项将由 JavaScript 动态生成 -->
                 </div>
             </div>
-            
-            <div class="tab-pane fade" id="config-pane" role="tabpanel">...</div>
-            <div class="tab-pane fade" id="nodes-pane" role="tabpanel">...</div>
-            <div class="tab-pane fade" id="cdn-pane" role="tabpanel">...</div>
-            <div class="tab-pane fade" id="proxy-import-pane" role="tabpanel">...</div>
-        </div>
-        
-        <footer class="d-flex justify-content-end mt-4">
-            <button class="btn btn-primary btn-lg" @click="saveAndApply">保存并应用所有配置</button>
-        </footer>
-        
-        <div class="toast-container position-fixed bottom-0 end-0 p-3">
-             <div id="liveToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
-                <div class="toast-header"><strong class="me-auto">通知</strong><button type="button" class="btn-close" data-bs-dismiss="toast"></button></div>
-                <div class="toast-body">{{ toastMessage }}</div>
-             </div>
-        </div>
+        </main>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        const { createApp, ref, onMounted, computed } = Vue;
-        createApp({
-            setup() {
-                const config = ref({});
-                const status = ref({ services: {} });
-                const toastMessage = ref('');
-                const toastInstance = ref(null);
+        document.addEventListener('DOMContentLoaded', function() {
+            const refreshBtn = document.getElementById('refreshBtn');
+            const statusGrid = document.getElementById('statusGrid');
 
-                const apiRequest = async (endpoint, method = 'GET', body = null) => {
-                    // ... (API request logic)
-                };
-                
-                const loadData = async () => {
-                    config.value = await apiRequest('/api/config') || {};
-                    status.value = await apiRequest('/api/status') || { services: {} };
-                };
-                
-                const saveAndApply = async () => {
-                    await apiRequest('/api/config', 'POST', config.value);
-                    const result = await apiRequest('/api/actions/restart', 'POST');
-                    showToast("配置已保存，服务重启中...");
-                };
+            const fetchStatus = async () => {
+                // 显示加载状态
+                statusGrid.innerHTML = '<p>正在获取状态...</p>';
+                refreshBtn.disabled = true;
+                refreshBtn.textContent = '刷新中...';
 
-                const performAction = async (action) => {
-                    await apiRequest(`/api/actions/${action}`, 'POST');
-                    showToast(`操作 '${action}' 已执行。`);
-                    setTimeout(loadData, 2000);
-                };
+                try {
+                    const response = await fetch('/api/status');
+                    if (!response.ok) {
+                        throw new Error('网络响应错误');
+                    }
+                    const data = await response.json();
+                    
+                    updateStatusGrid(data);
 
-                const showToast = (message) => {
-                    toastMessage.value = message;
-                    toastInstance.value.show();
-                };
-                
-                const toggleDarkMode = () => {
-                   document.documentElement.dataset.bsTheme = document.documentElement.dataset.bsTheme === 'light' ? 'dark' : 'light';
-                };
+                } catch (error) {
+                    console.error('获取状态失败:', error);
+                    statusGrid.innerHTML = '<p style="color: var(--error-color);">无法加载服务状态，请检查后端服务是否正常运行。</p>';
+                } finally {
+                    refreshBtn.disabled = false;
+                    refreshBtn.textContent = '刷新状态';
+                }
+            };
 
-                onMounted(() => {
-                    toastInstance.value = new bootstrap.Toast(document.getElementById('liveToast'));
-                    loadData();
-                });
+            const updateStatusGrid = (data) => {
+                statusGrid.innerHTML = ''; // 清空
+                for (const [service, status] of Object.entries(data)) {
+                    const item = document.createElement('div');
+                    item.className = 'status-item';
+                    
+                    const nameSpan = document.createElement('span');
+                    nameSpan.textContent = service;
+                    
+                    const lightSpan = document.createElement('span');
+                    lightSpan.className = `status-light ${status}`;
+                    
+                    item.appendChild(nameSpan);
+                    item.appendChild(lightSpan);
+                    statusGrid.appendChild(item);
+                }
+            };
 
-                return { config, status, toastMessage, performAction, saveAndApply, loadData, toggleDarkMode, showToast };
-            }
-        }).mount('#app');
+            refreshBtn.addEventListener('click', fetchStatus);
+
+            // 页面加载时自动获取一次状态
+            fetchStatus();
+        });
     </script>
 </body>
 </html>
-# === END index.html ===
 EOF
+    success "前端管理界面创建完成。"
+}
 
-    local web_port
-    web_port=$(jq -r '.web.port' "$CONFIG_DIR/config.json" 2>/dev/null || echo 54321)
-    
-    cat > "$SYSTEMD_DIR/proxy-manager-web.service" <<EOF
+# --- 3. 创建 Systemd 服务文件 ---
+create_systemd_service() {
+    info "正在配置后端服务的 systemd 单元..."
+    cat <<'EOF' > /etc/systemd/system/proxy-manager-backend.service
 [Unit]
-Description=Proxy Manager Web Panel
+Description=Proxy Manager Backend Service
 After=network.target
 
 [Service]
-Type=simple
 User=root
-WorkingDirectory=$WEB_DIR
-ExecStart=$VENV_DIR/bin/python $WEB_DIR/app.py
+WorkingDirectory=/opt/proxy-manager
+ExecStart=/opt/proxy-manager/venv/bin/python app.py
 Restart=always
-RestartSec=5
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    systemctl daemon-reload
+    success "Systemd 服务配置完成。"
+}
 
-    cat > "$NGINX_CONF_DIR/proxy-manager.conf" <<EOF
+
+# --- 4. 配置 Nginx 反向代理 ---
+setup_nginx() {
+    info "开始配置 Nginx 反向代理..."
+
+    # 清理可能存在的旧配置文件，避免冲突
+    if [ -f "/etc/nginx/conf.d/proxy_manager_pro.conf" ]; then
+        rm /etc/nginx/conf.d/proxy_manager_pro.conf
+        warn "已删除旧的配置文件: /etc/nginx/conf.d/proxy_manager_pro.conf"
+    fi
+    if [ -f "/etc/nginx/sites-enabled/default" ]; then
+        rm /etc/nginx/sites-enabled/default
+        warn "已删除默认的 Nginx 站点配置。"
+    fi
+    
+    # 写入新的 Nginx 配置文件
+    cat <<'EOF' > /etc/nginx/sites-available/proxy-manager
 server {
     listen 80;
     server_name _;
 
     location / {
-        proxy_pass http://127.0.0.1:${web_port};
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        # 代理所有请求到后端的 Flask 服务
+        proxy_pass http://127.0.0.1:54321;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 EOF
-    rm -f "$NGINX_ENABLED_DIR/proxy-manager.conf"
-    ln -s "$NGINX_CONF_DIR/proxy-manager.conf" "$NGINX_ENABLED_DIR/proxy-manager.conf" || log_warn "创建Nginx符号链接失败。"
-    log_info "Web面板和Nginx配置完成。"
-}
 
-create_core_services() {
-    log_info "正在创建Sing-box核心服务的systemd文件..."
-    cat > "$SYSTEMD_DIR/sing-box.service" <<EOF
-[Unit]
-Description=Sing-Box Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=$CORES_DIR/sing-box run -c $CONFIG_DIR/sing-box.json
-Restart=on-failure
-RestartSec=5
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    log_info "核心代理服务的systemd文件创建完成。"
-}
-
-start_all_services() {
-    log_info "正在启动所有服务..."
-    systemctl daemon-reload
-    systemctl enable sing-box proxy-manager-web >/dev/null 2>&1
-    if ! systemctl restart nginx; then log_error "Nginx 启动失败，请检查配置或80端口占用。"; fi
-    if ! systemctl restart proxy-manager-web; then log_error "Web面板服务启动失败，请检查日志。"; fi
-    if ! systemctl restart sing-box; then log_error "Sing-box 服务启动失败，请检查配置或端口占用。"; fi
-    log_info "所有服务已启动。"
-}
-
-stop_all_services() {
-    log_info "正在停止所有服务..."
-    systemctl stop sing-box proxy-manager-web nginx || true
-    log_info "所有服务已停止。"
-}
-
-uninstall() {
-    log_warn "即将卸载Proxy Manager及其所有组件！"
-    read -p "这将删除所有配置和核心文件。您确定要继续吗? (y/N): " choice
-    if [[ "$choice" != "y" && "$choice" != "Y" ]]; then
-        log_info "卸载已取消。"; exit 0;
+    # 启用新的站点配置
+    if [ ! -L "/etc/nginx/sites-enabled/proxy-manager" ]; then
+        ln -s /etc/nginx/sites-available/proxy-manager /etc/nginx/sites-enabled/
     fi
+
+    # 测试 Nginx 配置语法
+    nginx -t
     
-    stop_all_services
-    systemctl disable sing-box proxy-manager-web >/dev/null 2>&1
-    
-    rm -f "$SYSTEMD_DIR/sing-box.service" "$SYSTEMD_DIR/proxy-manager-web.service"
-    rm -f "$NGINX_CONF_DIR/proxy-manager.conf" "$NGINX_ENABLED_DIR/proxy-manager.conf"
-    
-    systemctl daemon-reload
-    systemctl reset-failed
-    
-    rm -rf "$BASE_DIR"
-    log_info "Proxy Manager已成功卸载。"
+    success "Nginx 配置完成。"
 }
 
-apply_acme() {
-    local domain
-    domain=$(jq -r '.domain' "$CONFIG_DIR/config.json" 2>/dev/null)
-    if [[ -z "$domain" || "$domain" == "null" ]]; then
-      log_error "请先在Web面板中配置域名并保存！"
-      return 1
-    fi
-    log_info "正在为 ${domain} 申请ACME证书..."
-    if [[ ! -f "$ACME_SH_INSTALL_DIR/acme.sh" ]]; then
-        log_info "正在安装 acme.sh..."
-        if ! curl https://get.acme.sh | sh; then
-            log_error "acme.sh 安装失败。"
-            return 1
-        fi
-    fi
-    
-    if ! "$ACME_SH_INSTALL_DIR"/acme.sh --issue -d "$domain" --standalone -k ec-256; then
-        log_error "ACME证书申请失败。"
-        return 1
-    fi
-    
-    if ! "$ACME_SH_INSTALL_DIR"/acme.sh --install-cert -d "$domain" --ecc \
-      --cert-file      "$SECRETS_DIR/cert.pem" \
-      --key-file       "$SECRETS_DIR/private.key" \
-      --fullchain-file "$SECRETS_DIR/fullchain.pem"; then
-        log_error "ACME证书安装失败。"
-        return 1
-    fi
-      
-    jq '.certificates.enabled = true' "$CONFIG_DIR/config.json" > tmp.$$.json && mv tmp.$$.json "$CONFIG_DIR/config.json"
-    
-    local web_port
-    web_port=$(jq -r '.web.port' "$CONFIG_DIR/config.json")
-    cat > "$NGINX_CONF_DIR/proxy-manager.conf" <<EOF
-server {
-    listen 80;
-    server_name ${domain};
-    location /.well-known/acme-challenge/ {
-        root $ACME_SH_INSTALL_DIR/${domain}_ecc;
-    }
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-server {
-    listen 443 ssl http2;
-    server_name ${domain};
-    ssl_certificate       ${SECRETS_DIR}/fullchain.pem;
-    ssl_certificate_key   ${SECRETS_DIR}/private.key;
-    ssl_session_cache     shared:SSL:10m;
-    ssl_session_timeout   1d;
-    ssl_protocols         TLSv1.2 TLSv1.3;
-    ssl_ciphers           EECDH+AESGCM:EDH+AESGCM;
-    ssl_prefer_server_ciphers on;
 
-    location / {
-        proxy_pass http://127.0.0.1:${web_port};
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-    log_info "ACME证书申请并配置完成，正在重启Nginx..."
-    if ! systemctl restart nginx; then
-        log_error "Nginx重启失败，请手动检查配置 `nginx -t`"
-    fi
-}
-# --- 主逻辑 ---
+# --- 主函数 ---
 main() {
-    check_root
+    # 欢迎信息
+    echo -e "${GREEN}=====================================================${NC}"
+    echo -e "${GREEN}  欢迎使用集成代理协议管理面板 (Sing-box 终极版)  ${NC}"
+    echo -e "${GREEN}=====================================================${NC}"
+    echo
+
+    # 检查是否为 root 用户
+    if [ "$(id -u)" -ne 0 ]; then
+        error "此脚本必须以 root 用户身份运行。"
+    fi
+
+    # 步骤 1: 安装依赖
+    info "步骤 1/5: 更新系统并安装核心依赖 (Nginx, Python)..."
+    apt-get update > /dev/null
+    apt-get install -y nginx python3-pip python3-venv > /dev/null 2>&1
+    success "依赖安装完成。"
+
+    # 步骤 2: 创建后端和前端文件
+    info "步骤 2/5: 部署后端和前端应用文件..."
+    create_backend_app
+    create_frontend_html
     
-    case "${1:-menu}" in
-        install)
-            detect_system
-            check_dependencies
-            mkdir -p "$CONFIG_DIR" "$CORES_DIR"
-            
-            log_info "开始下载核心文件..."
-            if ! download_sing_box; then
-                log_error "核心文件下载失败，安装中止。请检查网络连接或稍后再试。"
-                exit 1
-            fi
-            
-            install_dependencies
-            initialize_setup
-            generate_self_signed_cert
-            if ! setup_web_panel; then log_error "Web面板设置失败。"; exit 1; fi
-            create_core_services
-            
-            start_all_services
-            
-            local server_ip
-            server_ip=$(curl -s4 icanhazip.com || hostname -I | awk '{print $1}' | head -n1)
-            log_info "🎉 安装完成！"
-            log_info "请通过浏览器访问您的Web管理面板: ${YELLOW}http://${server_ip}${PLAIN}"
-            log_warn "如果无法访问，请检查防火墙是否开放80端口。"
-            ;;
-        uninstall) uninstall;;
-        start) start_all_services;;
-        stop) stop_all_services;;
-        restart) start_all_services;;
-        update-cores) download_sing_box; start_all_services;;
-        apply-acme) apply_acme;;
-        *)
-            echo "用法: $0 {install|uninstall|start|stop|restart|update-cores|apply-acme}"
-            exit 1
-            ;;
-    esac
+    # 步骤 3: 配置 Systemd 服务
+    info "步骤 3/5: 配置系统服务..."
+    create_systemd_service
+    
+    # 步骤 4: 配置 Nginx
+    info "步骤 4/5: 配置 Nginx..."
+    setup_nginx
+    
+    # 步骤 5: 启动并启用所有服务
+    info "步骤 5/5: 启动所有服务..."
+    systemctl enable proxy-manager-backend >/dev/null 2>&1
+    systemctl restart proxy-manager-backend
+    
+    systemctl enable nginx >/dev/null 2>&1
+    systemctl restart nginx
+    
+    # 获取服务器的公网 IP 地址
+    IP_ADDR=$(curl -s http://ipv4.icanhazip.com)
+
+    # 显示最终结果
+    echo
+    echo -e "${GREEN}🎉 恭喜！部署已全部完成！ 🎉${NC}"
+    echo -e "-----------------------------------------------------"
+    echo -e "您现在可以通过浏览器访问您的管理面板了。"
+    echo -e "  "
+    echo -e "   访问地址: ${YELLOW}http://${IP_ADDR}${NC}"
+    echo -e "  "
+    echo -e "-----------------------------------------------------"
+    echo
 }
 
-main "$@"
+# --- 执行主函数 ---
+main
