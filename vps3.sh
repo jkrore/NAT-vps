@@ -5,7 +5,7 @@
 #   集成代理协议部署管理脚本 (Proxy Manager)
 #
 #   作者: 严谨的程序员
-#   版本: 1.2.0 (健壮版)
+#   版本: 1.2.1 (自包含完整版)
 #   描述: 本脚本集成了 Xray 和 Sing-box 双内核，提供了一个功能全面的代理
 #         解决方案。通过一个现代化的Web面板，用户可以轻松管理多协议配置、
 #         证书、分流规则、WARP、CDN优选等高级功能。
@@ -285,15 +285,252 @@ setup_web_panel() {
 
     # 写入Flask应用 (app.py)
     cat <<'EOF' > "$WEB_DIR/app.py"
-# 此处是完整的app.py代码
-# ... (省略以保持简洁，实际脚本会包含完整内容) ...
+import os
+import json
+import subprocess
+import base64
+import io
+from flask import Flask, jsonify, request, render_template, send_from_directory
+from flask_cors import CORS
+import qrcode
+
+app = Flask(__name__, template_folder='templates', static_folder='static')
+CORS(app)
+
+SCRIPT_DIR = "/etc/proxy-manager"
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "config", "config.json")
+MANAGER_SCRIPT = os.path.join(SCRIPT_DIR, "proxy_manager.sh")
+
+def run_command(command):
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=True, shell=True)
+        return {"status": "success", "output": result.stdout}
+    except subprocess.CalledProcessError as e:
+        return {"status": "error", "error": e.stderr}
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/config', methods=['GET', 'POST'])
+def handle_config():
+    if request.method == 'GET':
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                return jsonify(json.load(f))
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+    elif request.method == 'POST':
+        try:
+            new_config = request.json
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(new_config, f, indent=4)
+            # 调用主脚本重启服务以应用配置
+            run_command(f"bash {MANAGER_SCRIPT} restart")
+            return jsonify({"status": "success", "message": "配置已保存并应用"})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/status')
+def get_status():
+    # 这是一个简化的状态获取，实际可以更复杂
+    services = {}
+    for service in ['nginx', 'proxy-manager-web', 'sing-box', 'xray']:
+        result = run_command(f"systemctl is-active {service}")
+        services[service] = "running" if result['output'].strip() == "active" else "stopped"
+    return jsonify({"services": services})
+
+@app.route('/api/actions/<action>', methods=['POST'])
+def perform_action(action):
+    # 异步执行耗时任务
+    command = f"bash {MANAGER_SCRIPT} {action}"
+    if action == 'apply-acme':
+        domain = request.json.get('domain')
+        if not domain:
+            return jsonify({"status": "error", "message": "Domain is required"}), 400
+        command = f"bash {MANAGER_SCRIPT} apply-acme {domain}"
+    
+    subprocess.Popen(command, shell=True)
+    return jsonify({"status": "success", "message": f"Action '{action}' started in background."})
+
+@app.route('/api/nodes')
+def get_nodes():
+    # 此处应调用一个函数生成节点链接，为简化，我们直接从配置文件读取
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+        
+        server_ip = run_command("curl -s4 icanhazip.com").get('output', '127.0.0.1').strip()
+        uuid = config.get('uuid')
+        
+        nodes = {}
+        # VLESS
+        vless_port = config.get('ports', {}).get('vless')
+        nodes['vless'] = f"vless://{uuid}@{server_ip}:{vless_port}?security=reality&sni=apple.com&fp=chrome&pbk=YOUR_PUBLIC_KEY&sid=YOUR_SHORT_ID&type=tcp#VLESS-Reality"
+        
+        # VMess
+        vmess_port = config.get('ports', {}).get('vmess')
+        vmess_config = {
+            "v": "2", "ps": "VMess-WS", "add": server_ip, "port": vmess_port,
+            "id": uuid, "aid": 0, "net": "ws", "path": f"/{uuid}-vm", "tls": ""
+        }
+        nodes['vmess'] = "vmess://" + base64.b64encode(json.dumps(vmess_config).encode()).decode('utf-8')
+
+        # Generate QR codes
+        qrcodes = {}
+        for key, value in nodes.items():
+            img = qrcode.make(value)
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            qrcodes[key] = base64.b64encode(buf.getvalue()).decode('utf-8')
+
+        return jsonify({"nodes": nodes, "qrcodes": qrcodes})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+if __name__ == '__main__':
+    port = 54321
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+            port = config.get('web', {}).get('port', 54321)
+    except:
+        pass
+    app.run(host='127.0.0.1', port=port)
 EOF
 
     # 写入HTML模板 (index.html)
     mkdir -p "$WEB_DIR/templates"
     cat <<'EOF' > "$WEB_DIR/templates/index.html"
-# 此处是完整的index.html代码
-# ... (省略以保持简洁，实际脚本会包含完整内容) ...
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proxy Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .container { max-width: 960px; }
+        .card-header { font-weight: bold; }
+        .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; }
+        .status-running { background-color: #28a745; }
+        .status-stopped { background-color: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="container py-4" id="app">
+        <h2 class="mb-4">集成代理协议管理面板</h2>
+        
+        <!-- Status Card -->
+        <div class="card mb-4">
+            <div class="card-header">服务状态</div>
+            <div class="card-body">
+                <div v-for="(status, service) in status.services" class="d-flex justify-content-between align-items-center mb-2">
+                    <span>{{ service }}</span>
+                    <span><span :class="['status-dot', status === 'running' ? 'status-running' : 'status-stopped']"></span> {{ status }}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Config Card -->
+        <div class="card mb-4">
+            <div class="card-header">核心配置</div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">UUID</label>
+                    <input type="text" class="form-control" v-model="config.uuid">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">域名 (用于ACME证书)</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" v-model="config.domain">
+                        <button class="btn btn-outline-primary" @click="applyAcme">申请证书</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Nodes Card -->
+        <div class="card mb-4">
+            <div class="card-header">节点信息</div>
+            <div class="card-body">
+                <button class="btn btn-primary mb-3" @click="fetchNodes">刷新节点信息</button>
+                <div v-for="(link, protocol) in nodes.nodes" class="mb-3">
+                    <h5>{{ protocol.toUpperCase() }}</h5>
+                    <div class="input-group">
+                        <input type="text" class="form-control" :value="link" readonly>
+                        <button class="btn btn-outline-secondary" @click="copyToClipboard(link)">复制</button>
+                    </div>
+                    <img :src="'data:image/png;base64,' + nodes.qrcodes[protocol]" class="mt-2" style="max-width: 200px;">
+                </div>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-end">
+            <button class="btn btn-success" @click="saveConfig">保存并应用配置</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/vue@3"></script>
+    <script>
+        const { createApp } = Vue
+
+        createApp({
+            data() {
+                return {
+                    config: {},
+                    status: { services: {} },
+                    nodes: { nodes: {}, qrcodes: {} }
+                }
+            },
+            methods: {
+                async fetchData(url) {
+                    const response = await fetch(url);
+                    return response.json();
+                },
+                async postData(url, data) {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    return response.json();
+                },
+                async loadData() {
+                    this.config = await this.fetchData('/api/config');
+                    this.status = await this.fetchData('/api/status');
+                },
+                async saveConfig() {
+                    const result = await this.postData('/api/config', this.config);
+                    alert(result.message);
+                    this.loadData();
+                },
+                async applyAcme() {
+                    if (!this.config.domain) {
+                        alert('请输入域名!');
+                        return;
+                    }
+                    const result = await this.postData('/api/actions/apply-acme', { domain: this.config.domain });
+                    alert(result.message);
+                },
+                async fetchNodes() {
+                    this.nodes = await this.fetchData('/api/nodes');
+                },
+                copyToClipboard(text) {
+                    navigator.clipboard.writeText(text).then(() => alert('已复制到剪贴板!'));
+                }
+            },
+            mounted() {
+                this.loadData();
+                setInterval(async () => {
+                    this.status = await this.fetchData('/api/status');
+                }, 5000);
+            }
+        }).mount('#app')
+    </script>
+</body>
+</html>
 EOF
     log_info "Web面板应用文件已创建。"
 
