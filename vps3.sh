@@ -1,38 +1,36 @@
 #!/usr/bin/env bash
-#
-# net-optimizer-unified.sh
-# 最终版一体化网络/内核/CPU/驱动/运行时调优脚本
-# 集成：你的所有代码片段 + 修复 RTT 与 runtime_adaptive 的已知错误
-#
-# 用法:
-#  sudo ./net-optimizer-unified.sh --dry-run                 # 预览
-#  sudo ./net-optimizer-unified.sh --apply --mode aggressive # 激进并应用
-#  sudo ./net-optimizer-unified.sh --apply --rtt 200         # 强制 RTT=200ms
-#
+# net-optimizer-final2.sh
+# Final unified network/hardware/process optimizer
+# Integrates all code snippets you provided, fixes RTT detection and arithmetic syntax issues.
+# Usage:
+#   sudo ./net-optimizer-final2.sh --dry-run --mode normal
+#   sudo ./net-optimizer-final2.sh --apply --mode aggressive --rtt 200
+#   sudo ./net-optimizer-final2.sh --rollback /var/backups/...
 set -euo pipefail
 IFS=$'\n\t'
 
-# ---------------- Defaults & CLI parsing ----------------
-APPLY=0           # 0=dry-run, 1=apply
-MODE="normal"     # normal|aggressive
-FORCE_RTT=""      # if provided by --rtt
+# ---------------- CLI ----------------
+APPLY=0            # 0=dry-run, 1=apply
+MODE="normal"      # normal|aggressive
+FORCE_RTT=""       # override rtt ms
 INSTALL_SERVICE=0
 RUN_IPERF=0
-IPERF_SERVERS=()  # user can populate
+IPERF_SERVERS=()
 QUIET=0
+ROLLBACK_DIR=""
 
-usage() {
+usage(){
   cat <<EOF
-net-optimizer-unified.sh -- 综合调优脚本
-选项:
-  --dry-run            只预览，不写入（默认）
-  --apply              写入并应用（激进）
-  --mode normal|aggressive  选择优化模式 (默认 normal)
-  --rtt <ms>           覆盖 RTT 值（ms）
-  --install-service    安装为 systemd 定时服务（可选）
-  --iperf <ip1,ip2>    启用 iperf hook 并设置服务器
-  -q, --quiet          静默模式（少输出）
-  -h, --help           显示帮助
+Usage:
+  --dry-run               Preview only (default)
+  --apply                 Apply changes (write)
+  --mode normal|aggressive
+  --rtt <ms>              Force RTT value (ms)
+  --iperf ip,ip2          Enable iperf hook
+  --install-service       Install systemd service+timer (optional)
+  --rollback <backupdir>  Run rollback from given backup dir (will prompt)
+  -q --quiet              Reduce output
+  -h --help
 EOF
   exit 1
 }
@@ -43,11 +41,12 @@ while [ $# -gt 0 ]; do
     --apply) APPLY=1; shift;;
     --mode) MODE="${2:-}"; shift 2;;
     --rtt) FORCE_RTT="${2:-}"; shift 2;;
-    --install-service) INSTALL_SERVICE=1; shift;;
     --iperf) IFS=',' read -r -a IPERF_SERVERS <<< "${2:-}"; RUN_IPERF=1; shift 2;;
+    --install-service) INSTALL_SERVICE=1; shift;;
+    --rollback) ROLLBACK_DIR="${2:-}"; shift 2;;
     -q|--quiet) QUIET=1; shift;;
     -h|--help) usage;;
-    *) echo "未知参数: $1"; usage;;
+    *) echo "Unknown arg: $1"; usage;;
   esac
 done
 
@@ -56,11 +55,10 @@ _ok(){ [ "$QUIET" -eq 0 ] && printf "\033[1;32m[OK]\033[0m %s\n" "$*"; }
 _warn(){ printf "\033[1;33m[!]\033[0m %s\n" "$*" >&2; }
 _err(){ printf "\033[1;31m[!!]\033[0m %s\n" "$*" >&2; }
 
-run_or_echo(){ if [ "$APPLY" -eq 1 ]; then eval "$@"; else _note "DRY-RUN: $*"; fi }
+require_root(){ if [ "$(id -u)" -ne 0 ]; then _err "请以 root 运行"; exit 2; fi; }
+require_root
 
-# ---------------- Basic checks ----------------
-if [ "$(id -u)" -ne 0 ]; then _err "请以 root 运行"; exit 2; fi
-
+# ---------------- housekeeping ----------------
 TIMESTAMP="$(date +%F-%H%M%S)"
 BACKUP_ROOT="/var/backups/net-optimizer"
 BACKUP_DIR="${BACKUP_ROOT}/net-optimizer-${TIMESTAMP}"
@@ -70,43 +68,35 @@ DEFAULT_RTT_MS=150
 
 mkdir -p "$BACKUP_DIR"
 
-# ---------------- small helpers ----------------
+# ---------------- utilities ----------------
 has(){ command -v "$1" >/dev/null 2>&1; }
 timestamp(){ date +%F-%H%M%S; }
 
-min3(){ awk -v a="${1:-0}" -v b="${2:-0}" -v c="${3:-0}" 'BEGIN{m=a; if(b<m)m=b; if(c<m)m=c; printf "%.0f", m}'; }
+# strictly extract integer (digits only), optional fallback
+to_int(){ local s="${1:-}"; s="$(printf '%s' "$s" | tr -cd '0-9')"; echo "${s:-0}"; }
+to_pos_int(){ local s; s=$(to_int "$1"); [ "$s" -lt 0 ] && s=0; echo "$s"; }
 
-cpu_mask_for_cores(){
-  local cores=${1:-1}
-  if [ "$cores" -le 0 ]; then echo "1"; return; fi
-  if [ "$cores" -ge 62 ]; then echo "ffffffffffffffff"; return; fi
-  local mask=$(( (1 << cores) - 1 ))
-  printf "%x" "$mask"
-}
+# safe float to formatted string (for display)
+fmt_mb(){ awk -v b="$1" 'BEGIN{printf "%.2f", b/1024/1024}'; }
 
-# Safe sysfs write
+# safe write to sysfs
 write_sysfs_value(){
-  local path="$1" val="$2"
+  local path="$1"; local val="$2"
   if [ ! -e "$path" ]; then _warn "sysfs not found: $path"; return 1; fi
   if [ ! -w "$path" ]; then _warn "sysfs not writable: $path"; return 2; fi
   printf '%s' "$val" > "$path" || { _warn "写入 $path 失败"; return 3; }
   return 0
 }
 
-# ---------------- RTT detection (robust) ----------------
+# ---------------- RTT detection ----------------
 get_ssh_client_ip(){
   if [ -n "${SSH_CONNECTION:-}" ]; then echo "$SSH_CONNECTION" | awk '{print $1}'; return 0; fi
   if [ -n "${SSH_CLIENT:-}" ]; then echo "$SSH_CLIENT" | awk '{print $1}'; return 0; fi
   return 1
 }
-
 detect_rtt_ms(){
-  # - 参数: target ip/domain
-  # - 返回: 整数 ms，或空字符串表示检测失败或不可信
-  local target="$1"
-  local tmp out int_out
+  local target="$1" tmp out int_out
   tmp="$(mktemp)"
-  # ping 4 次，超时 2s
   if ping -c 4 -W 2 "$target" >"$tmp" 2>/dev/null; then
     out=$(awk -F'/' '/rtt|round-trip/ {print $5; exit}' "$tmp" || true)
     if [ -z "$out" ]; then
@@ -117,8 +107,8 @@ detect_rtt_ms(){
   fi
   rm -f "$tmp"
   if [[ "$out" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    # 合理性检查：若 RTT < 5ms 视为可疑并返回空（你提出方案A）
     int_out=$(printf "%.0f" "$out")
+    # If rtt < 5ms treat as suspicious (your suggestion)
     if [ "$int_out" -lt 5 ]; then
       _warn "检测到的 RTT (${int_out} ms) 过低，可能不准确，忽略此测量"
       echo ""
@@ -132,36 +122,35 @@ detect_rtt_ms(){
 
 # ---------------- environment detection ----------------
 MEM_GIB=$(awk '/MemTotal/ {printf "%.2f", $2/1024/1024; exit}' /proc/meminfo)
-CPU_CORES=$(nproc || echo 1)
+CPU_CORES=$(to_pos_int "$(nproc 2>/dev/null || echo 1)")
 BW_Mbps="$DEFAULT_BW_Mbps"
 RTT_MS=""
 
-# If user forced RTT
+# user forced RTT?
 if [ -n "$FORCE_RTT" ]; then
-  if [[ "$FORCE_RTT" =~ ^[0-9]+$ ]]; then RTT_MS="$FORCE_RTT"; _note "使用手动指定 RTT=${RTT_MS} ms"; else _warn "无效的 --rtt 值，忽略"; fi
+  if [[ "$FORCE_RTT" =~ ^[0-9]+$ ]]; then RTT_MS="$FORCE_RTT"; _note "手动指定 RTT=${RTT_MS} ms"; else _warn "无效 --rtt，忽略"; fi
 fi
 
-# try SSH client
-if [ -z "$RTT_MS" ] && ssh_ip="$(get_ssh_client_ip 2>/dev/null || true)"; then
-  if [ -n "$ssh_ip" ]; then
-    _note "自动从 SSH 连接检测到客户端 IP: ${ssh_ip}，尝试 ping 获取 RTT"
-    r="$(detect_rtt_ms "$ssh_ip" || true)"
-    if [ -n "$r" ]; then RTT_MS="$r"; _ok "检测 RTT=${RTT_MS} ms (来自 SSH 客户端 ${ssh_ip})"; else _warn "对 SSH 客户端 ping 失败或不可信"; fi
+# try SSH client IP
+if [ -z "$RTT_MS" ] && sship="$(get_ssh_client_ip 2>/dev/null || true)"; then
+  if [ -n "$sship" ]; then
+    _note "自动从 SSH 检测到客户端 IP: $sship，尝试 ping RTT"
+    r="$(detect_rtt_ms "$sship" || true)"
+    if [ -n "$r" ]; then RTT_MS="$r"; _ok "检测 RTT=${RTT_MS} ms (来自 SSH 客户端 $sship)"; else _warn "对 SSH 客户端 ping 失败或不可信"; fi
   fi
 fi
 
-# fallback to public IP 1.1.1.1
 if [ -z "$RTT_MS" ]; then
   _note "回退到公共地址 1.1.1.1 进行 RTT 检测"
   r="$(detect_rtt_ms 1.1.1.1 || true)"
-  if [ -n "$r" ]; then RTT_MS="$r"; _ok "检测 RTT=${RTT_MS} ms (来自 1.1.1.1)"; else _warn "无法检测 RTT, 使用默认 ${DEFAULT_RTT_MS} ms"; RTT_MS="$DEFAULT_RTT_MS"; fi
+  if [ -n "$r" ]; then RTT_MS="$r"; _ok "检测 RTT=${RTT_MS} ms (1.1.1.1)"; else _warn "无法检测 RTT，使用默认 ${DEFAULT_RTT_MS} ms"; RTT_MS="$DEFAULT_RTT_MS"; fi
 fi
 
 _note "系统概览: MEM=${MEM_GIB} GiB, CPU=${CPU_CORES} cores, BW=${BW_Mbps} Mbps, RTT=${RTT_MS} ms"
 
 # ---------------- BDP & bucketization ----------------
 BDP_BYTES=$(awk -v bw="$BW_Mbps" -v rtt="$RTT_MS" 'BEGIN{printf "%.0f", bw*125*rtt}')
-BDP_MB=$(awk -v b="$BDP_BYTES" 'BEGIN{printf "%.2f", b/1024/1024}')
+BDP_MB=$(fmt_mb "$BDP_BYTES")
 MEM_BYTES=$(awk -v g="$MEM_GIB" 'BEGIN{printf "%.0f", g*1024*1024*1024}')
 TWO_BDP=$(( BDP_BYTES * 2 ))
 RAM3_BYTES=$(awk -v m="$MEM_BYTES" 'BEGIN{printf "%.0f", m*0.03}')
@@ -179,7 +168,6 @@ bucket_le_mb(){
 }
 MAX_MB=$(bucket_le_mb "$MAX_MB_NUM")
 MAX_BYTES=$(( MAX_MB * 1024 * 1024 ))
-
 if [ "$MAX_MB" -ge 32 ]; then DEF_R=262144; DEF_W=524288
 elif [ "$MAX_MB" -ge 8 ]; then DEF_R=131072; DEF_W=262144
 else DEF_R=87380; DEF_W=131072; fi
@@ -189,19 +177,20 @@ TCP_WMEM_MIN=4096; TCP_WMEM_DEF=65536; TCP_WMEM_MAX=$MAX_BYTES
 
 _note "BDP=${BDP_BYTES} bytes (~${BDP_MB} MB) -> cap ${MAX_MB} MB"
 
-# ---------------- prepare backup & rollback ----------------
+# ---------------- backups & rollback scaffold ----------------
 ROLLBACK="${BACKUP_DIR}/rollback.sh"
+run_or_echo(){ if [ "$APPLY" -eq 1 ]; then eval "$@"; else _note "DRY-RUN: $*"; fi }
 run_or_echo mkdir -p "$BACKUP_DIR"
 cat > "$ROLLBACK" <<'EOF'
 #!/usr/bin/env bash
-# rollback 自动恢复脚本（尽量自动化，但请先检查）
+# rollback helper (generated)
 set -euo pipefail
-echo "[ROLLBACK] 请检查备份目录并按需恢复"
+echo "[ROLLBACK] 请手动检查备份并按需恢复"
 EOF
 run_or_echo chmod +x "$ROLLBACK"
 _ok "备份目录: $BACKUP_DIR"
 
-# ---------------- conflict handling ----------------
+# ---------------- conflict cleaning ----------------
 KEY_REGEX='^(net\.core\.default_qdisc|net\.core\.rmem_max|net\.core\.wmem_max|net\.core\.rmem_default|net\.core\.wmem_default|net\.ipv4\.tcp_rmem|net\.ipv4\.tcp_wmem|net\.ipv4\.tcp_congestion_control)[[:space:]]*='
 
 comment_conflicts_in_sysctl_conf(){
@@ -237,11 +226,9 @@ disable_conflict_files_in_dir(){
 
 _note "步骤A：备份并注释 /etc/sysctl.conf 的冲突键"
 comment_conflicts_in_sysctl_conf
-
 _note "步骤B：备份并改名 /etc/sysctl.d 下含冲突键的旧文件"
 disable_conflict_files_in_dir "/etc/sysctl.d"
-
-_note "步骤C：扫描其他目录（只提示）"
+_note "步骤C：扫描其他系统目录（仅提示）"
 for d in /usr/local/lib/sysctl.d /usr/lib/sysctl.d /lib/sysctl.d /run/sysctl.d; do
   if [ -d "$d" ]; then
     _warn "提示：检测到系统路径 $d（仅提示，不做修改）"
@@ -251,16 +238,13 @@ for d in /usr/local/lib/sysctl.d /usr/lib/sysctl.d /lib/sysctl.d /run/sysctl.d; 
   fi
 done
 
-# ---------------- load bbr if possible ----------------
-if has modprobe; then
-  run_or_echo modprobe tcp_bbr 2>/dev/null || true
-  _ok "尝试加载 tcp_bbr"
-fi
+# ---------------- load bbr ----------------
+if has modprobe; then run_or_echo modprobe tcp_bbr 2>/dev/null || true; _ok "尝试加载 tcp_bbr"; fi
 
-# ---------------- generate sysctl and write ----------------
+# ---------------- generate sysctl ----------------
 TMP_SYSCTL="$(mktemp)"
 cat > "$TMP_SYSCTL" <<EOF
-# Auto-generated by net-optimizer-unified
+# Auto-generated by net-optimizer-final2
 # MEM=${MEM_GIB} GiB, BW=${BW_Mbps} Mbps, RTT=${RTT_MS} ms
 # BDP: ${BDP_BYTES} bytes (~${BDP_MB} MB)
 # Cap bucket: ${MAX_MB} MB
@@ -307,17 +291,16 @@ net.ipv4.conf.all.arp_announce = 2
 net.ipv4.conf.all.arp_ignore = 1
 EOF
 
-# backup & write
 if [ -f "$SYSCTL_TARGET" ]; then
   run_or_echo cp -a "$SYSCTL_TARGET" "${BACKUP_DIR}/$(basename "$SYSCTL_TARGET").bak.${TIMESTAMP}"
   echo "cp -a \"${BACKUP_DIR}/$(basename "$SYSCTL_TARGET").bak.${TIMESTAMP}\" \"${SYSCTL_TARGET}\"" >> "$ROLLBACK"
-  _note "备份现有 sysctl target"
+  _note "备份现有 $SYSCTL_TARGET"
 fi
 run_or_echo install -m 0644 "$TMP_SYSCTL" "$SYSCTL_TARGET"
 run_or_echo sysctl --system >/dev/null 2>&1 || _warn "sysctl --system 返回非零"
-_ok "已写入 sysctl（视 APPLY）"
+_ok "已写入并应用 sysctl（视 APPLY）"
 
-# ---------------- NIC / ethtool / RPS / XPS / IRQ tuning ----------------
+# ---------------- NIC tuning ----------------
 _note "检测网络接口"
 mapfile -t IFACES < <(ip -o link show | awk -F': ' '{print $2}' | grep -Ev '^(lo|virbr|docker|br-|veth|tun|tap)' || true)
 _note "候选接口: ${IFACES[*]:-none}"
@@ -332,9 +315,8 @@ tune_ethtool(){
       run_or_echo ethtool -K "$ifn" "$feat" on 2>/dev/null || true
     fi
   done
-  _ok "调整 $ifn ethtool offloads（若支持）"
+  _ok "调整 $ifn 的 ethtool offloads（如支持）"
 }
-
 set_rps_xps(){
   local ifn="$1"
   local rps_cores=$(( CPU_CORES / 2 ))
@@ -352,14 +334,12 @@ set_rps_xps(){
     done
     _ok "已为 $ifn 设置 RPS/XPS cpumask=$cpumask_hex"
   else
-    _warn "$ifn 无 queues，跳过 RPS/XPS"
+    _warn "$ifn 无 queues，跳过"
   fi
 }
-
 assign_irqs_to_cpus(){
   local ifn="$1" cores="$CPU_CORES"
-  # Guard default values
-  cores=${cores:-1}
+  cores=$(to_pos_int "$cores")
   while read -r line; do
     irq=$(awk -F: '{print $1}' <<< "$line" | tr -d ' ')
     if echo "$line" | grep -q -E "${ifn}"; then
@@ -382,8 +362,7 @@ for ifn in "${IFACES[@]:-}"; do
 done
 
 # ---------------- CPU governor & cpuset ----------------
-if has cpupower; then
-  run_or_echo cpupower frequency-set -g performance >/dev/null 2>&1 || true
+if has cpupower; then run_or_echo cpupower frequency-set -g performance >/dev/null 2>&1 || true
 else
   if [ -d /sys/devices/system/cpu/cpu0/cpufreq ]; then
     for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
@@ -391,7 +370,7 @@ else
     done
   fi
 fi
-_ok "设置 CPU governor=performance（如支持）"
+_ok "CPU governor -> performance (如支持)"
 
 if [ -d /sys/fs/cgroup/cpuset ]; then
   NET_CPUSET="/sys/fs/cgroup/cpuset/net-opt"
@@ -405,7 +384,7 @@ if [ -d /sys/fs/cgroup/cpuset ]; then
   fi
 fi
 
-# ---------------- qdisc apply ----------------
+# ---------------- qdisc ----------------
 IFACE=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -1 || true)
 if has tc && [ -n "$IFACE" ]; then
   QDISC="fq"
@@ -416,16 +395,15 @@ if has tc && [ -n "$IFACE" ]; then
     fi
   fi
   run_or_echo tc qdisc replace dev "$IFACE" root "$QDISC" 2>/dev/null || _warn "tc qdisc replace 失败"
-  _ok "设置 qdisc=$QDISC on $IFACE"
+  _ok "qdisc on ${IFACE}: ${QDISC}"
 fi
 
-# ---------------- DNS optimize (systemd-resolved aware) ----------------
+# ---------------- DNS optimize ----------------
 dns_opt(){
   local DNS_LIST="1.1.1.1 8.8.8.8 9.9.9.9"
   if [ -L /etc/resolv.conf ] && readlink /etc/resolv.conf | grep -qi systemd; then
     if has resolvectl; then
-      local IFACE_LOCAL; IFACE_LOCAL="$IFACE"
-      [ -n "$IFACE_LOCAL" ] && run_or_echo resolvectl dns "$IFACE_LOCAL" $DNS_LIST || true
+      [ -n "$IFACE" ] && run_or_echo resolvectl dns "$IFACE" $DNS_LIST || true
       run_or_echo mkdir -p /etc/systemd/resolved.conf.d
       cat > /etc/systemd/resolved.conf.d/10-dns-opt.conf <<'EOF'
 [Resolve]
@@ -454,7 +432,7 @@ EOF'
 }
 dns_opt
 
-# ---------------- iperf hook (optional) ----------------
+# ---------------- iperf hook ----------------
 iperf_hook(){
   if [ "$RUN_IPERF" -eq 0 ] || ! has iperf3; then return; fi
   for s in "${IPERF_SERVERS[@]:-}"; do
@@ -477,15 +455,12 @@ iperf_hook(){
 }
 iperf_hook
 
-# ---------------- runtime adaptive (safe arithmetic) ----------------
+# ---------------- runtime adaptive ----------------
 runtime_adaptive(){
   local MON_LOG="${BACKUP_DIR}/runtime_monitor.log"
   touch "$MON_LOG"
   local total_retrans=0 total_segs_out=0
-  # safe default values
-  total_retrans=0
-  total_segs_out=0
-
+  total_retrans=0; total_segs_out=0
   if has ss; then
     while IFS= read -r line; do
       r=$(echo "$line" | grep -Po 'retrans:\d+/\K\d+' || echo 0)
@@ -495,15 +470,11 @@ runtime_adaptive(){
       total_segs_out=$(( total_segs_out + s ))
     done < <(ss -tin 2>/dev/null || true)
   fi
-
-  local retrans_pct=0
+  local retrans_pct="0"
   if [ "$total_segs_out" -gt 0 ]; then
     retrans_pct=$(awk -v r="$total_retrans" -v s="$total_segs_out" 'BEGIN{ if(s==0) print 0; else printf "%.2f", r/s*100 }')
-  else
-    retrans_pct="0"
   fi
 
-  # throughput sampling
   declare -A rx1 tx1 rx2 tx2
   for ifn in "${IFACES[@]:-}"; do
     line=$(grep -E "^\s*${ifn}:" /proc/net/dev || true)
@@ -519,55 +490,47 @@ runtime_adaptive(){
     else rx2[$ifn]=0; tx2[$ifn]=0; fi
   done
 
-  local total_mbps=0
-  total_mbps=0
+  local total_mbps=0; total_mbps=0
   for ifn in "${IFACES[@]:-}"; do
-    rxd=$(( (rx2[$ifn] - rx1[$ifn])  ))
-    txd=$(( (tx2[$ifn] - tx1[$ifn])  ))
+    rxd=$(( (rx2[$ifn] - rx1[$ifn]) )); txd=$(( (tx2[$ifn] - tx1[$ifn]) ))
     rxd=${rxd:-0}; txd=${txd:-0}
     mbps=$(( (rxd + txd) * 8 / 1000000 ))
     total_mbps=$(( total_mbps + mbps ))
   done
-
   _note "runtime metrics: total_mbps=${total_mbps}Mbps retrans_pct=${retrans_pct}%"
 
-  # current r/w values (safe fallback)
   cur_rmax=$(sysctl -n net.core.rmem_max 2>/dev/null || echo "$MAX_BYTES")
   cur_wmax=$(sysctl -n net.core.wmem_max 2>/dev/null || echo "$MAX_BYTES")
-  cur_rmax=${cur_rmax:-$MAX_BYTES}
-  cur_wmax=${cur_wmax:-$MAX_BYTES}
-
+  cur_rmax=$(to_pos_int "$cur_rmax"); cur_wmax=$(to_pos_int "$cur_wmax")
   local change=0 new_rmax="$cur_rmax" new_wmax="$cur_wmax"
 
-  # decision rules: use awk comparisons safely
   if awk -v r="$retrans_pct" 'BEGIN{exit !(r>2)}'; then
     new_rmax=$(( cur_rmax * 9 / 10 ))
     new_wmax=$(( cur_wmax * 9 / 10 ))
     change=1
-    _note "检测高重传 (${retrans_pct}%), r/w max 降低10% -> ${new_rmax}"
+    _note "检测高重传 (${retrans_pct}%)，降低 r/w max 10% -> ${new_rmax}"
   else
     util_pct=$(awk -v t="$total_mbps" -v b="$BW_Mbps" 'BEGIN{ if(b==0) print 0; else printf "%.2f", t/b*100 }')
     if awk -v u="$util_pct" 'BEGIN{exit !(u<30)}'; then
-      new_rmax=$(( cur_rmax * 11 / 10 ))
-      new_wmax=$(( cur_wmax * 11 / 10 ))
+      new_rmax=$(( cur_rmax * 11 / 10 )); new_wmax=$(( cur_wmax * 11 / 10 ))
       [ "$new_rmax" -gt "$MAX_BYTES" ] && new_rmax="$MAX_BYTES"
       [ "$new_wmax" -gt "$MAX_BYTES" ] && new_wmax="$MAX_BYTES"
       change=1
-      _note "链路利用率低 (${util_pct}%), 逐步提升 r/w max -> ${new_rmax}"
+      _note "利用率低 (${util_pct}%), 小幅提升 r/w max -> ${new_rmax}"
     fi
   fi
 
   if [ "$change" -eq 1 ]; then
     tmpf="$(mktemp)"
     cat > "$tmpf" <<EOF
-# runtime adjusted by net-optimizer-unified $(date -u)
+# runtime adjusted by net-optimizer-final2 $(date -u)
 net.core.rmem_max = ${new_rmax}
 net.core.wmem_max = ${new_wmax}
 net.ipv4.tcp_rmem = ${TCP_RMEM_MIN} ${TCP_RMEM_DEF} ${new_rmax}
 net.ipv4.tcp_wmem = ${TCP_WMEM_MIN} ${TCP_WMEM_DEF} ${new_wmax}
 EOF
     run_or_echo install -m 0644 "$tmpf" "$SYSCTL_TARGET"
-    run_or_echo sysctl --system >/dev/null 2>&1 || _warn "sysctl --system 返回非零"
+    run_or_echo sysctl --system >/dev/null 2>&1 || _warn "sysctl --system returned non-zero"
     rm -f "$tmpf" || true
     echo "$(date +%s) adjust rmax=${new_rmax} wmax=${new_wmax} mbps=${total_mbps} retrans=${retrans_pct}" >> "${BACKUP_DIR}/runtime.log"
     _ok "runtime 调整已应用"
@@ -577,7 +540,7 @@ EOF
 }
 runtime_adaptive
 
-# ---------------- GRUB aggressive change (safe) ----------------
+# ---------------- aggressive GRUB edits ----------------
 if [ "$MODE" = "aggressive" ]; then
   GRUB_CFG="/etc/default/grub"
   if [ -f "$GRUB_CFG" ]; then
@@ -599,27 +562,27 @@ if [ "$MODE" = "aggressive" ]; then
         _ok "GRUB 已包含 mitigations=off，跳过"
       fi
     else
-      _warn "未识别 GRUB_CMDLINE_LINUX_DEFAULT，跳过 GRUB 修改"
+      _warn "未识别 GRUB_CMDLINE_LINUX_DEFAULT，跳过"
     fi
   fi
 fi
 
-# ---------------- OCSP helper (from your snippet) ----------------
+# ---------------- OCSP helper ----------------
 get_ocsp_response(){
   domain="$1"
-  if [ -z "$domain" ]; then _warn "需要域名"; return 1; fi
+  if [ -z "$domain" ]; then _warn "get_ocsp_response: 需域名"; return 1; fi
   CERT="/etc/letsencrypt/live/${domain}/cert.pem"
   CHAIN="/etc/letsencrypt/live/${domain}/chain.pem"
-  if [ ! -f "$CERT" ] || [ ! -f "$CHAIN" ]; then _warn "未找到证书/链: $CERT $CHAIN"; return 1; fi
+  if [ ! -f "$CERT" ] || [ ! -f "$CHAIN" ]; then _warn "未找到 cert/chain"; return 1; fi
   OUTDIR="/etc/letsencrypt/ocsp/${domain}"
   run_or_echo mkdir -p "$OUTDIR"
   OCSP_URL=$(openssl x509 -noout -ocsp_uri -in "$CERT" 2>/dev/null || true)
-  if [ -z "$OCSP_URL" ]; then _warn "未从 cert 读取到 OCSP URI"; return 1; fi
+  if [ -z "$OCSP_URL" ]; then _warn "未找到 OCSP URI"; return 1; fi
   run_or_echo openssl ocsp -issuer "$CHAIN" -cert "$CERT" -url "$OCSP_URL" -respout "${OUTDIR}/${domain}.ocsp.resp" || _warn "openssl ocsp 获取失败"
-  _ok "OCSP 写入 ${OUTDIR}/${domain}.ocsp.resp"
+  _ok "OCSP response 写入 ${OUTDIR}/${domain}.ocsp.resp"
 }
 
-# ---------------- finish: backups & rollback ----------------
+# ---------------- finalize backups and summary ----------------
 run_or_echo cp -a "$TMP_SYSCTL" "${BACKUP_DIR}/sysctl.generated.${TIMESTAMP}" || true
 run_or_echo chmod +x "$ROLLBACK"
 _ok "回滚脚本已生成: $ROLLBACK"
@@ -635,5 +598,25 @@ sysctl -n net.ipv4.tcp_wmem 2>/dev/null || true
 if has tc && [ -n "$IFACE" ]; then echo "qdisc on ${IFACE}:"; tc qdisc show dev "$IFACE" || true; fi
 _note "Backups & rollback in: $BACKUP_DIR"
 _note "若要回滚: sudo $ROLLBACK"
+
+# ---------------- rollback invocation if requested ----------------
+if [ -n "$ROLLBACK_DIR" ]; then
+  if [ -x "${ROLLBACK_DIR}/rollback.sh" ]; then
+    _note "执行回滚脚本: ${ROLLBACK_DIR}/rollback.sh (会提示确认)"
+    if [ "$APPLY" -eq 1 ]; then
+      read -r -p "确认执行回滚吗？(yes/NO): " ans
+      if [ "$ans" = "yes" ]; then
+        bash "${ROLLBACK_DIR}/rollback.sh"
+        _ok "回滚已执行"
+      else
+        _note "已取消回滚"
+      fi
+    else
+      _note "DRY-RUN：要实际回滚请加 --apply"
+    fi
+  else
+    _err "未在 ${ROLLBACK_DIR} 找到可执行 rollback.sh"
+  fi
+fi
 
 exit 0
