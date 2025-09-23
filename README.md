@@ -1,164 +1,157 @@
 
-# 终极 VPS 优化套件：详细指南
 
-本文档详细解析了来自`jkrore/NAT-vps`仓库中的三个强大 shell 脚本：`vps.sh`、`vps1.sh`和`vps2.sh`。这些脚本旨在对基于 Linux 的虚拟专用服务器（VPS）应用广泛的系统和网络优化。
+***
 
-## 脚本哲学
+# Ultimate VPS 优化套件：完整终极指南
 
-脚本基于模块化和安全优先的原则运行。关键概念包括：
-*   **干运行模式**：默认情况下，脚本仅显示它们*将要*做出的更改。您必须明确使用`--apply`标志来修改系统。
-*   **自动备份**：在更改任何配置文件之前，会创建带时间戳的备份，并通常会生成回滚脚本。
-*   **智能检测**：脚本尝试检测服务器环境（CPU、内存、网络状况、角色）以应用定制优化。
+本指南为您提供 `jkrore/NAT-vps` 仓库中两个核心优化脚本 `vps.sh` 和 `vps2.sh` 的详尽说明，从“一键命令”到“深度解析”，涵盖您需要了解的一切。
 
----
+### 核心设计理念
+*   **安全第一**: 所有脚本默认以**预览模式 (Dry Run)** 运行，只显示操作计划，不修改系统。
+*   **备份先行**: 在修改任何重要配置文件前，脚本会自动创建备份。
+*   **智能检测**: 脚本会尝试分析您的系统环境（如网络延迟、硬件配置），以应用最合适的优化参数。
 
-## `vps.sh` / `vps1.sh`：系统级优化
-
-`vps.sh` 和 `vps1.sh` 是相同的脚本，专注于超出核心网络调优的系统级增强。它被描述为“补充模块脚本”，旨在提供原始“终极奇点”套件中的优化，这些优化未被专注于网络的 `vps2.sh` 所涵盖。
-
-### 目的
-通过调整 I/O、清理不必要的服务、针对特定角色（如虚拟化主机）优化内核，以及安装用于监控和动态调优的工具来提升整体系统性能。
-
-### 使用方法
-
-该脚本模块化，允许您选择要应用哪些优化。
-
-| 参数 | 描述 |
-| :--- | :--- |
-| `--apply` | 应用更改。没有这个参数，脚本将在"干运行"模式下运行。 |
-| `--all` | 选择所有可用的优化模块。 |
-| `--apply-io-limits` | 应用 I/O 和系统资源限制优化。 |
-| `--cleanup-services` | **(高风险)** 禁用一组常见且通常不需要的服务。 |
-| `--apply-grub` | **(极高风险)** 修改 CPU 隔离的引导加载程序设置。适用于主机系统。 |
-| `--apply-host-specifics` | 对主机系统应用优化，如大内存页。 |
-| `--generate-tools` | 创建简单的监控和基准测试脚本。 |
-| `--install-hw-tuning` | 安装一个用于动态硬件调优的服务。 |
-| `-h`, `--help` | 显示帮助信息。 |
-
-**示例：**
-```bash
-# 预览所有更改但不应用它们
-./vps.sh --all
-
-# 仅应用 I/O 和限制优化
-```
-./vps.sh --apply --apply-io-limits
-```
-
-### 模块详细分解
-
-#### 1. 环境检测
-在应用任何更改之前，脚本会分析系统以确定其 `角色`：
-*   **`nat`**: 如果 `ip_forward` 已启用或检测到 `iptables`/`nftables` 中的 NAT 规则。
-*   **`host`**: 如果它是一台裸金属机器（`systemd-detect-virt` 返回 `none`），具有 KVM 支持，并且至少有 4GB 内存。这是一台用于托管虚拟机的机器。
-*   **`guest`**: 标准 VPS 的默认角色。
-
-这个角色确定对于 GRUB 和 Huge Pages 等特定角色的模块至关重要。
-
-#### 2. I/O 和限制 (`--apply-io-limits`)
-*   **资源限制**：创建`/etc/security/limits.d/99-ultimate-singularity.conf`以大幅增加最大打开文件数(`nofile`)至 200 万以上。这对于处理大量并发连接的高流量服务器和应用至关重要。
-*   **I/O 调度器**：创建`/etc/udev/rules.d/60-ultimate-io.rules`以优化 I/O 调度器。
-*   对于 NVMe 驱动器，它将调度器设置为`none`，这是理想的，因为设备足够快，不需要内核级别的请求重新排序。
-    *   对于 SSD（`rotational`="0"），它将调度器设置为`mq-deadline`，这是一种现代的低延迟调度器，适合快速存储。
-    *   它还增加了正在处理的请求数量（`nr_requests`）到`1024`，以提高吞吐量。
-
-#### 3. 服务清理（`--cleanup-services`）
-这个高风险模块禁用并停止了在专用服务器上通常不必要的一组服务和计时器，从而释放了内存和 CPU 周期。
-*   **常见服务**： `irqbalance`, `tuned`, `thermald`, `bluetooth`, `cups`, `snapd`, `unattended-upgrades`, `rsyslog`, `auditd`, `cron`.
-*   **网络服务**： `firewalld`, `ufw`, `nftables`（如果角色不是`nat`则禁用）。
-*   **虚拟化服务**： `libvirtd`, `virtlogd`（如果角色不是`host`则禁用）。
-*   **内核模块**: 黑名单模块如 `bluetooth` 和 `pcspkr`，以防止它们加载。
-
-#### 4. GRUB 优化 (`--apply-grub`)
-这个非常高风险的模块仅适用于**主机角色**。它修改 `/etc/default/grub` 以隔离四分之一的 CPU 核心用于主机进程，减少操作系统抖动，并将剩余核心分配给虚拟机。
-*   **`isolcpus`**: 将指定的 CPU 从内核调度器的通用控制中移除。
-*   **`nohz_full`**: 防止内核的定时器中断隔离的 CPU，从而降低延迟。
-*   **`rcu_nocbs`**: 将 RCU 回调从隔离的 CPU 卸载。
-*   **`idle=poll`**: 防止 CPU 进入深度睡眠状态，以牺牲功耗换取更低延迟。
-*   **这些更改需要重启才能生效。**
-
-#### 5. 主机特定配置 (`--apply-host-specifics`)
-同样，仅对**主机角色**而言，此模块配置内存中的"大页"。标准内存以 4KB 页面进行管理；大页使用更大的块（例如 2MB 或 1GB）。对于虚拟化，这减少了虚拟机内存管理的开销，从而提高性能。
-
-#### 6. 硬件调优服务 (`--install-hw-tuning`)
-此模块安装一个脚本和一个`systemd`计时器，每 5 分钟运行一次该脚本。该脚本执行动态优化：
-*   **CPU Governor**: 将 CPU 频率调节器设置为 `performance`，强制 CPU 以最高时钟速度运行，以获得稳定的性能。
-*   **Dynamic NIC Buffers**: 它测量每个接口的网络流量速度。根据速度，使用 `ethtool` 动态调整 RX/TX 环缓冲区的大小。较大的缓冲区可以在高流量突发期间防止数据包丢失。
-*   **Disables Offloads**: 它禁用某些网络卸载功能，如 GSO、GRO、TSO 和 LRO，这些功能有时可能会引入延迟。
+### 基本要求
+*   **必须以 `root` 用户身份执行所有命令。**
+*   您的系统需要安装 `wget`。 (通常都已预装)
 
 ---
 
-## `vps2.sh`: 网络性能优化器
+## 第一部分：一键命令终极指南
 
-`vps2.sh` 是一个高度专业化的脚本，专注于优化网络吞吐量和延迟。它采用基于**带宽-延迟积（BDP）**的科学方法来配置 Linux 网络栈。
+这是最核心的部分，直接复制粘贴即可使用。
 
-### 目的
-自动调整内核网络参数（`sysctl`），以匹配服务器互联网连接的特性，从而最大化速度和可靠性。
+### `vps.sh` (系统综合优化)
+此脚本优化 I/O、系统限制、清理服务、调整 CPU 等。
 
-### 使用方法
+#### **1. 一键预览 (绝对安全)**
+此命令会下载并执行脚本，**显示**它计划进行的所有更改，但**不会**对您的系统做任何实际修改。这是**必须执行**的第一步。
+
+```bash
+wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh | bash -s -- --all
+```
+
+#### **2. 一键应用 (执行修改)**
+**警告：此命令会实际修改您的系统配置。** 请务必先运行上面的预览命令，确认所有操作都符合您的预期后，再执行此命令。
+
+```bash
+wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh | bash -s -- --apply --all
+```
+
+---
+
+### `vps2.sh` (网络专项优化)
+此脚本通过科学计算 BDP (带宽时延积) 来精细调整网络参数，开启 BBR，最大化网络吞吐量。
+
+#### **1. 一键预览 (绝对安全)**
+此命令会分析您的网络环境并**显示**推荐的网络参数，但**不会**保存它们。
+
+```bash
+wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash
+```
+
+#### **2. 一键应用 (执行修改)**
+**警告：此命令会实际修改您的网络配置。** 请务必先运行上面的预览命令，确认参数无误后，再执行此命令。
+
+```bash
+wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --apply
+```
+
+#### **3. [进阶] 激进模式应用**
+此模式会额外修改 GRUB 启动项以禁用 CPU 安全漏洞补丁，可提升性能但有**安全风险**，且**需要重启**才能生效。
+
+```bash
+# 预览激进模式
+wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --mode aggressive
+
+# 应用激进模式
+wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --apply --mode aggressive
+```
+
+---
+
+## 第二部分：推荐的优化流程
+
+对于一台全新的服务器，请遵循以下步骤以获得最佳效果：
+
+1.  **先优化网络**:
+    *   执行 `vps2.sh` 的**预览**命令。
+    *   检查输出的参数是否合理。
+    *   执行 `vps2.sh` 的**应用**命令。
+
+2.  **再优化系统**:
+    *   执行 `vps.sh` 的**预览**命令。
+    *   仔细检查将要被禁用/修改的服务和配置。
+    *   执行 `vps.sh` 的**应用**命令。
+
+3.  **重启服务器 (如果需要)**:
+    *   如果您在任何步骤中使用了涉及 GRUB 的优化 (例如 `vps2.sh` 的激进模式或 `vps.sh` 的 `--apply-grub` 模块)，您**必须重启服务器**才能使这些更改生效。
+    *   执行 `sudo reboot`。
+
+---
+
+## 第三部分：脚本深度解析
+
+### `vps.sh` (系统综合优化)
+
+*   **目的**: 提供超越网络核心的系统级优化，增强服务器综合性能。
+*   **备份目录**: `/root/ultimate_singularity_backups/`
+
+#### **命令行参数**
+
+| 参数 | 描述 | 风险等级 |
+| :--- | :--- | :--- |
+| `--apply` | 实际应用更改 (默认为预览模式) | - |
+| `--all` | 选择下面所有的优化模块 | - |
+| `--apply-io-limits` | 优化存储 I/O 和系统资源限制 (文件句柄数等) | **低** |
+| `--cleanup-services` | **禁用**不常用的系统服务 (如蓝牙、打印等) | **高** |
+| `--apply-grub` | 为母鸡角色应用 CPU 隔离等 GRUB 参数 | **极高** |
+| `--apply-host-specifics` | 为母鸡角色应用大页内存等特定优化 | **中** |
+| `--generate-tools` | 生成监控和基准测试的辅助脚本 | **低** |
+| `--install-hw-tuning` | 安装并启用一个后台服务，用于动态硬件调优 | **中** |
+
+### `vps2.sh` (网络专项优化)
+
+*   **目的**: 专注于最大化网络吞吐量和降低延迟，是提升网络性能的核心脚本。
+*   **备份目录**: `/var/backups/net-optimizer/`
+
+#### **命令行参数**
 
 | 参数 | 描述 |
 | :--- | :--- |
-| `--apply` | 应用更改。默认为 `--dry-run` |
-| `--mode normal\|aggressive` | `normal` 是默认模式。`aggressive` 会应用更危险的 GRUB 编辑来禁用 CPU 缓解措施。 |
-| `--rtt <ms>` | 手动强制设置往返时间（RTT）值（单位为毫秒），覆盖自动检测。 |
-| `--iperf <ip1,ip2>` | 在应用设置后，对指定服务器运行 `iperf3` 测试以测量带宽。 |
-| `--install-service` | （提供的脚本中未完全实现）旨在安装一个持久服务。 |
-| `--rollback <backupdir>` | 使用指定的备份目录回滚更改。执行时需要 `--apply`。 |
-| `-q`, `--quiet` | 减少输出量。 |
+| `--apply` | 实际应用更改 (默认为预览模式)。 |
+| `--mode normal\|aggressive` | `normal` 为标准优化。`aggressive` 会额外禁用 CPU 安全补丁 (有风险，需重启)。 |
+| `--rtt <毫秒>` | 手动指定网络的 RTT (延迟) 值，覆盖自动检测。 |
+| `--iperf <IP地址>` | 在优化后，对指定的服务器运行 iperf3 带宽测试。 |
+| `--rollback <备份目录>` | 从指定的备份目录中恢复配置。 |
 
-**示例：**
-```bash
-# 预览激进设置的网络优化
-./vps2.sh --dry-run --mode aggressive
+#### **核心操作详解**
 
-# 应用优化，手动设置 RTT 为 80ms
-./vps2.sh --apply --rtt 80
-```
+1.  **RTT 与 BDP 计算**: 脚本的核心。它会自动检测到您服务器的延迟(RTT)，然后结合带宽(默认1000Mbps)计算出**带宽时延积(BDP)**。BDP 是优化 TCP 缓冲区的最关键科学依据。
+2.  **备份与冲突清理**: 在应用任何设置前，它会扫描现有的 `sysctl` 配置文件，将冲突的旧设置备份并禁用，同时生成一个一键回滚脚本 `rollback.sh` 存放在备份目录中。
+3.  **Sysctl 参数配置**: 基于 BDP 的计算结果，生成一个全新的配置文件 `/etc/sysctl.d/999-net-optimizer.conf`，其中包含：
+    *   **开启 BBRv2/BBRv3**: 设置 `net.ipv4.tcp_congestion_control = bbr` 和 `net.core.default_qdisc = fq`。
+    *   **优化 TCP 缓冲区**: 科学地设置 `tcp_rmem` 和 `tcp_wmem` 等核心参数。
+    *   **其他 TCP/IP 栈优化**: 启用 TCP Fast Open、窗口缩放等现代化特性。
+4.  **网卡与 CPU 调优**:
+    *   **CPU 调速器**: 将 CPU 设置为 `performance` 模式，确保最大性能。
+    *   **中断绑定**: 将网卡的中断(IRQ)分散到不同的 CPU 核心上，避免单核瓶颈。
+    *   **RPS/XPS**: 开启网卡的多核处理能力，进一步分散网络数据包处理压力。
 
-### 操作的详细分解
+---
 
-#### 1. RTT 和 BDP 计算
-这是脚本的核心。
-1. **RTT 检测**：脚本按特定顺序确定网络延迟（RTT）：
-    1. 如果提供了`--rtt`参数，则使用该值。
-    2. 尝试获取当前 SSH 会话的 IP 地址（`$SSH_CONNECTION`）并对其进行 ping 操作。
-    3. 如果失败，则回退到 ping 一个可靠的公共服务器（`1.1.1.1`）。
-4.  如果检测到的 RTT 可疑地低（< 5ms），则会被丢弃。
-2.  **BDP 计算**：它使用公式`BDP（字节）= 带宽（Mbps）* 125 * RTT（ms）`来计算带宽时延积。BDP 表示在任何时刻网络上可以“在途”的最大数据量。
-3.  **缓冲区大小设置**：最佳的 TCP 缓冲区大小与时延积直接相关。脚本将最大缓冲区大小限制为这三个值中最小的一个，以防止内存使用过度：
-    *   `2 * BDP`
-*   `总系统内存的3%`
-    *   `64 MB`
-    然后使用这个最终值来设置内核的 TCP 内存限制。
+## 第四部分：安全与回滚
 
-#### 2. 冲突清理和备份
-在应用任何设置之前，脚本确保有一个干净的起点：
-*   它在 `/var/backups/net-optimizer/` 创建一个备份目录。
-*   它扫描 `/etc/sysctl.conf` 和 `/etc/sysctl.d/` 中的所有文件，查找与其自身冲突的设置（例如，`net.ipv4.tcp_congestion_control`）。
-*   `/etc/sysctl.conf` 中的冲突行被注释掉。
-*   `/etc/sysctl.d/`目录中的冲突文件被重命名为`.disabled_by_optimizer`。
-*   在备份目录中生成一个`rollback.sh`脚本，以便轻松撤销这些更改。
+两个脚本都设计了完善的备份机制。
 
-#### 3. 系统控制配置
-脚本在`/etc/sysctl.d/`目录中生成并应用一个新的系统控制配置文件`999-net-optimizer.conf`。关键参数包括：
-*   **拥塞控制**：默认设置为 `bbr` 并使用 `fq`（公平队列）数据包调度。BBR 是 Google 开发的一种现代算法，旨在优化现代网络中的吞吐量。
-*   **TCP/内核缓冲区**：根据 BDP 计算结果设置 `net.core.rmem_max`、`net.core.wmem_max`、`net.ipv4.tcp_rmem` 和 `net.ipv4.tcp_wmem`。这是最关键的调整步骤。
-*   **TCP 行为**：启用现代 TCP 功能，如 `tcp_mtu_probing`（用于发现最佳 MTU）、`tcp_fastopen` 和 `tcp_window_scaling`。
-*   **虚拟机/内核设置**：对虚拟内存设置如 `vm.swappiness` 和 `vm.vfs_cache_pressure` 进行微调，以优先将应用数据保留在内存中。
+*   对于 `vps.sh`，所有被修改的文件的原始版本都会被备份到 `/root/ultimate_singularity_backups/` 下的一个带时间戳的目录中。
+*   对于 `vps2.sh`，它会创建一个功能更强大的备份，位于 `/var/backups/net-optimizer/`。每个备份目录里都包含一个 `rollback.sh` 脚本。
 
-#### 4. NIC 和 CPU 调优
-*   **卸载功能**: 通过`ethtool`在网卡上启用常见硬件卸载功能（`tso`、`gso`、`gro`），以减少 CPU 负载。
-*   **RPS/XPS**: 配置接收包调度和发送包调度。这会将处理网络数据包的工作负载分配到可用的前半部分 CPU 核心上，防止单个核心成为瓶颈。
-*   **中断亲和性**: 尝试将网卡硬件中断请求（IRQ）分配到不同的 CPU 核心，进一步分散负载。
-*   **CPU Governor**: 将 CPU governor 设置为`performance`以获得最大、一致的时钟速度。
+#### **如何使用 `vps2.sh` 的回滚功能？**
 
-#### 5. 运行时自适应调整
-应用初始设置后，脚本执行一次性检查，以查看是否需要立即调整。
-*   它监控 TCP 重传率和当前网络利用率。
-*   如果重传率高（>2%），它假定缓冲区可能过大，导致丢包，因此将缓冲区减少10%。
-*   如果网络利用率低（<30%），它假定有更多空间进行更激进的缓冲，因此将缓冲区增加10%。
+1.  首先，找到您想要回滚到的备份目录，例如 `/var/backups/net-optimizer/net-optimizer-2025-09-23-071400`。
+2.  执行以下命令 (**需要 `--apply` 参数来确认执行**):
 
-#### 6. 激进模式 (`--mode aggressive`)
-如果选择此模式，脚本将修改 `/etc/default/grub` 以添加内核参数，禁用针对 Spectre 和 Meltdown 等漏洞的各种 CPU 安全缓解措施（`mitigations=off`、`noibrs`、`nopti` 等）。
-*   **警告**：这可以提供显著的性能提升，特别是对于虚拟化和 I/O 密集型工作负载，但它以禁用重要安全功能为代价。**需要重启。**
+    ```bash
+    wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --apply --rollback /var/backups/net-optimizer/net-optimizer-2025-09-23-071400
+    ```
