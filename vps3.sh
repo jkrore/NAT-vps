@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # net-optimizer-final2.sh
-# Final unified network/hardware/process optimizer
-# Integrates all code snippets you provided, fixes RTT detection and arithmetic syntax issues.
-# Usage:
+# Unified network/hardware/process optimizer (final)
+# Usage examples:
 #   sudo ./net-optimizer-final2.sh --dry-run --mode normal
 #   sudo ./net-optimizer-final2.sh --apply --mode aggressive --rtt 200
 #   sudo ./net-optimizer-final2.sh --rollback /var/backups/...
 set -euo pipefail
 IFS=$'\n\t'
 
-# ---------------- CLI ----------------
+# ---------------- CLI defaults ----------------
 APPLY=0            # 0=dry-run, 1=apply
 MODE="normal"      # normal|aggressive
 FORCE_RTT=""       # override rtt ms
@@ -35,37 +34,66 @@ EOF
   exit 1
 }
 
+# ---------------- helper / utility functions ----------------
+_note(){ [ "${QUIET:-0}" -eq 0 ] && printf "\033[1;34m[i]\033[0m %s\n" "$*"; }
+_ok(){ [ "${QUIET:-0}" -eq 0 ] && printf "\033[1;32m[OK]\033[0m %s\n" "$*"; }
+_warn(){ printf "\033[1;33m[!]\033[0m %s\n" "$*" >&2; }
+_err(){ printf "\033[1;31m[!!]\033[0m %s\n" "$*" >&2; }
 
+require_root(){ if [ "$(id -u)" -ne 0 ]; then _err "请以 root 运行"; exit 2; fi; }
+require_root
 
-# 生成前 n 个 CPU 的 cpumask（hex），例如 n=1 -> 1, n=2 -> 3, n=8 -> ff
-# 返回不带0x前缀的小写十六进制字符串，兼容写入 rps/xps sysfs
-# 生成前 n 个 CPU 的 cpumask（hex），例如 n=1 -> 1, n=2 -> 3, n=8 -> ff
-# 返回不带0x前缀的小写十六进制字符串
+has(){ command -v "$1" >/dev/null 2>&1; }
+timestamp(){ date +%F-%H%M%S; }
+
+# strictly extract integer digits only
+to_int(){ local s="${1:-}"; s="$(printf '%s' "$s" | tr -cd '0-9')"; echo "${s:-0}"; }
+to_pos_int(){ local s; s=$(to_int "$1"); [ "$s" -lt 0 ] && s=0; echo "$s"; }
+
+# safe float to formatted MB string (for display)
+fmt_mb(){ awk -v b="$1" 'BEGIN{printf "%.2f", b/1024/1024}'; }
+
+# safe write to sysfs (logs warnings on failure)
+write_sysfs_value(){
+  local path="$1"; local val="$2"
+  if [ ! -e "$path" ]; then _warn "sysfs not found: $path"; return 1; fi
+  if [ ! -w "$path" ]; then _warn "sysfs not writable: $path"; return 2; fi
+  printf '%s' "$val" > "$path" || { _warn "写入 $path 失败"; return 3; }
+  return 0
+}
+
+# track temporary files for cleanup on exit
+TMPFILES=()
+track_tmp(){ TMPFILES+=("$1"); }
+cleanup_tmp(){
+  for f in "${TMPFILES[@]:-}"; do
+    [ -e "$f" ] && rm -f "$f" || true
+  done
+}
+trap cleanup_tmp EXIT
+
+# ---------------- cpu mask helper ----------------
+# produce hex mask for first n CPUs (no 0x prefix)
 cpu_mask_for_cores(){
   local n=$(to_pos_int "$1")
   if [ "$n" -le 0 ]; then printf "1"; return; fi
-  # cap to 63 bits to avoid arithmetic overflow in bash
+  # cap for safety
   if [ "$n" -gt 63 ]; then n=63; fi
-  # compute (1<<n)-1
   local mask=$(( (1 << n) - 1 ))
   printf '%x' "$mask"
 }
 
-# 返回三个数中的最小值（整数安全）
+# ---------------- min3 ----------------
 min3(){
   local a=${1:-0} b=${2:-0} c=${3:-0}
-  # 保证为整数（去掉非数字）
-  a=$(echo "$a" | tr -cd '0-9')
-  b=$(echo "$b" | tr -cd '0-9')
-  c=$(echo "$c" | tr -cd '0-9')
-  [ -z "$a" ] && a=0
-  [ -z "$b" ] && b=0
-  [ -z "$c" ] && c=0
+  a=$(to_int "$a"); b=$(to_int "$b"); c=$(to_int "$c")
+  [ -z "$a" ] && a=0; [ -z "$b" ] && b=0; [ -z "$c" ] && c=0
   if (( b < a )); then a=$b; fi
   if (( c < a )); then a=$c; fi
   printf "%s" "$a"
 }
 
+# ---------------- parse CLI ----------------
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) APPLY=0; shift;;
@@ -81,14 +109,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-_note(){ [ "$QUIET" -eq 0 ] && printf "\033[1;34m[i]\033[0m %s\n" "$*"; }
-_ok(){ [ "$QUIET" -eq 0 ] && printf "\033[1;32m[OK]\033[0m %s\n" "$*"; }
-_warn(){ printf "\033[1;33m[!]\033[0m %s\n" "$*" >&2; }
-_err(){ printf "\033[1;31m[!!]\033[0m %s\n" "$*" >&2; }
-
-require_root(){ if [ "$(id -u)" -ne 0 ]; then _err "请以 root 运行"; exit 2; fi; }
-require_root
-
 # ---------------- housekeeping ----------------
 TIMESTAMP="$(date +%F-%H%M%S)"
 BACKUP_ROOT="/var/backups/net-optimizer"
@@ -99,36 +119,8 @@ DEFAULT_RTT_MS=150
 
 mkdir -p "$BACKUP_DIR"
 
-# ---------------- temp file tracking & cleanup ----------------
-TMPFILES=()
-track_tmp(){ TMPFILES+=("$1"); }
-cleanup_tmp(){
-  for f in "${TMPFILES[@]:-}"; do
-    [ -e "$f" ] && rm -f "$f" || true
-  done
-}
-trap cleanup_tmp EXIT
-
-
-# ---------------- utilities ----------------
-has(){ command -v "$1" >/dev/null 2>&1; }
-timestamp(){ date +%F-%H%M%S; }
-
-# strictly extract integer (digits only), optional fallback
-to_int(){ local s="${1:-}"; s="$(printf '%s' "$s" | tr -cd '0-9')"; echo "${s:-0}"; }
-to_pos_int(){ local s; s=$(to_int "$1"); [ "$s" -lt 0 ] && s=0; echo "$s"; }
-
-# safe float to formatted string (for display)
-fmt_mb(){ awk -v b="$1" 'BEGIN{printf "%.2f", b/1024/1024}'; }
-
-# safe write to sysfs
-write_sysfs_value(){
-  local path="$1"; local val="$2"
-  if [ ! -e "$path" ]; then _warn "sysfs not found: $path"; return 1; fi
-  if [ ! -w "$path" ]; then _warn "sysfs not writable: $path"; return 2; fi
-  printf '%s' "$val" > "$path" || { _warn "写入 $path 失败"; return 3; }
-  return 0
-}
+# helper: run or echo (dry-run support)
+run_or_echo(){ if [ "${APPLY:-0}" -eq 1 ]; then eval "$@"; else _note "DRY-RUN: $*"; fi }
 
 # ---------------- RTT detection ----------------
 get_ssh_client_ip(){
@@ -139,19 +131,24 @@ get_ssh_client_ip(){
 detect_rtt_ms(){
   local target="$1" tmp out int_out
   tmp="$(mktemp)"
+  track_tmp "$tmp"
+  # ping 4 times, wait short; different ping flavors may have different output
   if ping -c 4 -W 2 "$target" >"$tmp" 2>/dev/null; then
     out=$(awk -F'/' '/rtt|round-trip/ {print $5; exit}' "$tmp" || true)
     if [ -z "$out" ]; then
+      # fallback parse for other ping formats
       out=$(grep -Eo '[0-9]+(\.[0-9]+)?/([0-9]+(\.[0-9]+)?)' "$tmp" | head -n1 | awk -F'/' '{print $2}' || true)
     fi
   else
+    # ping failed, but check tail for any summary
     out=$(tail -n 3 "$tmp" 2>/dev/null | awk -F'/' '/rtt|round-trip/ {print $5; exit}' || true)
   fi
-  rm -f "$tmp"
+  # remove tmp (we also track for trap)
+  rm -f "$tmp" || true
   if [[ "$out" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     int_out=$(printf "%.0f" "$out")
-    # If rtt < 5ms treat as suspicious (your suggestion)
-    if [ "$int_out" -lt 5 ]; then
+    # treat very small RTTs as suspicious
+    if [ "$(to_pos_int "$int_out")" -lt 5 ]; then
       _warn "检测到的 RTT (${int_out} ms) 过低，可能不准确，忽略此测量"
       echo ""
     else
@@ -163,7 +160,7 @@ detect_rtt_ms(){
 }
 
 # ---------------- environment detection ----------------
-MEM_GIB=$(awk '/MemTotal/ {printf "%.2f", $2/1024/1024; exit}' /proc/meminfo)
+MEM_GIB=$(awk '/MemTotal/ {printf "%.2f", $2/1024/1024; exit}' /proc/meminfo || echo "0")
 CPU_CORES=$(to_pos_int "$(nproc 2>/dev/null || echo 1)")
 BW_Mbps="$DEFAULT_BW_Mbps"
 RTT_MS=""
@@ -221,7 +218,6 @@ _note "BDP=${BDP_BYTES} bytes (~${BDP_MB} MB) -> cap ${MAX_MB} MB"
 
 # ---------------- backups & rollback scaffold ----------------
 ROLLBACK="${BACKUP_DIR}/rollback.sh"
-run_or_echo(){ if [ "$APPLY" -eq 1 ]; then eval "$@"; else _note "DRY-RUN: $*"; fi }
 run_or_echo mkdir -p "$BACKUP_DIR"
 cat > "$ROLLBACK" <<'EOF'
 #!/usr/bin/env bash
@@ -403,7 +399,6 @@ assign_irqs_to_cpus(){
   _ok "尝试为 $ifn 分配 IRQ affinity"
 }
 
-
 for ifn in "${IFACES[@]:-}"; do
   _note "处理接口: $ifn"
   tune_ethtool "$ifn"
@@ -439,6 +434,7 @@ IFACE=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -1 
 if has tc && [ -n "$IFACE" ]; then
   QDISC="fq"
   if [ "$MODE" = "aggressive" ]; then
+    # test cake support
     if tc qdisc add dev lo root cake 2>/dev/null; then
       tc qdisc del dev lo root 2>/dev/null || true
       QDISC="cake"
@@ -484,7 +480,7 @@ dns_opt
 
 # ---------------- iperf hook ----------------
 iperf_hook(){
-  if [ "$RUN_IPERF" -eq 0 ] || ! has iperf3; then return; fi
+  if [ "${RUN_IPERF:-0}" -eq 0 ] || ! has iperf3; then return; fi
   for s in "${IPERF_SERVERS[@]:-}"; do
     _note "iperf3 -> $s"
     if iperf3 -c "$s" -t 10 -J >/tmp/.iperf.json 2>/dev/null; then
@@ -509,70 +505,106 @@ iperf_hook
 runtime_adaptive(){
   local MON_LOG="${BACKUP_DIR}/runtime_monitor.log"
   touch "$MON_LOG"
+  track_tmp "$MON_LOG" || true
+
+  # collect retrans/segs_out safely (avoid grep -P)
   local total_retrans=0 total_segs_out=0
-  total_retrans=0; total_segs_out=0
   if has ss; then
     while IFS= read -r line; do
-      r=$(echo "$line" | grep -Po 'retrans:\d+/\K\d+' || echo 0)
-      s=$(echo "$line" | grep -Po 'segs_out:\K\d+' || echo 0)
-      r=${r:-0}; s=${s:-0}
+      # parse retrans: format like "retrans:128/256" -> want second number (retransmitted count) or fallback
+      r=$(echo "$line" | sed -n 's/.*retrans:[0-9]\+\/\([0-9]\+\).*/\1/p' | head -n1 || true)
+      [ -z "$r" ] && r=0
+      s=$(echo "$line" | sed -n 's/.*segs_out:\([0-9]\+\).*/\1/p' | head -n1 || true)
+      [ -z "$s" ] && s=0
+      r=$(to_pos_int "$r"); s=$(to_pos_int "$s")
       total_retrans=$(( total_retrans + r ))
       total_segs_out=$(( total_segs_out + s ))
     done < <(ss -tin 2>/dev/null || true)
   fi
+
   local retrans_pct="0"
   if [ "$total_segs_out" -gt 0 ]; then
+    # produce formatted percent using awk but keep raw numeric string safe
     retrans_pct=$(awk -v r="$total_retrans" -v s="$total_segs_out" 'BEGIN{ if(s==0) print 0; else printf "%.2f", r/s*100 }')
   fi
 
+  # sample /proc/net/dev to compute bandwidth usage; sanitize all values
   declare -A rx1 tx1 rx2 tx2
   for ifn in "${IFACES[@]:-}"; do
     line=$(grep -E "^\s*${ifn}:" /proc/net/dev || true)
     if [ -n "$line" ]; then
-      read -r _ rx1[$ifn] tx1[$ifn] <<< "$(echo "$line" | awk -F: '{gsub(/^ +/,"",$2); print $2}' | awk '{print $1,$9}')"
-    else rx1[$ifn]=0; tx1[$ifn]=0; fi
+      # parse rx bytes (field 1) and tx bytes (field 9)
+      rx1_val=$(echo "$line" | awk -F: '{gsub(/^ +/,"",$2); print $2}' | awk '{print $1}')
+      tx1_val=$(echo "$line" | awk -F: '{gsub(/^ +/,"",$2); print $2}' | awk '{print $9}')
+      rx1[$ifn]=$(to_pos_int "$rx1_val")
+      tx1[$ifn]=$(to_pos_int "$tx1_val")
+    else
+      rx1[$ifn]=0; tx1[$ifn]=0
+    fi
   done
+
   sleep 1
+
   for ifn in "${IFACES[@]:-}"; do
     line=$(grep -E "^\s*${ifn}:" /proc/net/dev || true)
     if [ -n "$line" ]; then
-      read -r _ rx2[$ifn] tx2[$ifn] <<< "$(echo "$line" | awk -F: '{gsub(/^ +/,"",$2); print $2}' | awk '{print $1,$9}')"
-    else rx2[$ifn]=0; tx2[$ifn]=0; fi
+      rx2_val=$(echo "$line" | awk -F: '{gsub(/^ +/,"",$2); print $2}' | awk '{print $1}')
+      tx2_val=$(echo "$line" | awk -F: '{gsub(/^ +/,"",$2); print $2}' | awk '{print $9}')
+      rx2[$ifn]=$(to_pos_int "$rx2_val")
+      tx2[$ifn]=$(to_pos_int "$tx2_val")
+    else
+      rx2[$ifn]=0; tx2[$ifn]=0
+    fi
   done
 
-  local total_mbps=0; total_mbps=0
+  local total_mbps=0
   for ifn in "${IFACES[@]:-}"; do
-    rxd=$(( (rx2[$ifn] - rx1[$ifn]) )); txd=$(( (tx2[$ifn] - tx1[$ifn]) ))
-    rxd=${rxd:-0}; txd=${txd:-0}
+    local rx1_val=${rx1[$ifn]:-0}
+    local tx1_val=${tx1[$ifn]:-0}
+    local rx2_val=${rx2[$ifn]:-0}
+    local tx2_val=${tx2[$ifn]:-0}
+    # ensure integer
+    rx1_val=$(to_pos_int "$rx1_val"); tx1_val=$(to_pos_int "$tx1_val")
+    rx2_val=$(to_pos_int "$rx2_val"); tx2_val=$(to_pos_int "$tx2_val")
+    rxd=$(( rx2_val - rx1_val )); txd=$(( tx2_val - tx1_val ))
+    [ "$rxd" -lt 0 ] && rxd=0
+    [ "$txd" -lt 0 ] && txd=0
     mbps=$(( (rxd + txd) * 8 / 1000000 ))
     total_mbps=$(( total_mbps + mbps ))
   done
+
   _note "runtime metrics: total_mbps=${total_mbps}Mbps retrans_pct=${retrans_pct}%"
 
-  cur_rmax=$(sysctl -n net.core.rmem_max 2>/dev/null || echo "$MAX_BYTES")
-  cur_wmax=$(sysctl -n net.core.wmem_max 2>/dev/null || echo "$MAX_BYTES")
-  cur_rmax=$(to_pos_int "$cur_rmax"); cur_wmax=$(to_pos_int "$cur_wmax")
+  # fetch current sysctl values and sanitize
+  cur_rmax=$(to_pos_int "$(sysctl -n net.core.rmem_max 2>/dev/null || echo "$MAX_BYTES")")
+  cur_wmax=$(to_pos_int "$(sysctl -n net.core.wmem_max 2>/dev/null || echo "$MAX_BYTES")")
   local change=0 new_rmax="$cur_rmax" new_wmax="$cur_wmax"
 
-  if awk -v r="$retrans_pct" 'BEGIN{exit !(r>2)}'; then
+  # interpret retrans_pct numerically (fallback to 0 if not numeric)
+  local retrans_pct_num
+  retrans_pct_num=$(echo "$retrans_pct" | awk '{if($0+0==$0) printf "%.2f", $0; else print 0}')
+  # if retrans_pct > 2%, reduce buffers by 10%
+  if awk -v r="$retrans_pct_num" 'BEGIN{exit !(r>2)}'; then
     new_rmax=$(( cur_rmax * 9 / 10 ))
     new_wmax=$(( cur_wmax * 9 / 10 ))
     change=1
-    _note "检测高重传 (${retrans_pct}%)，降低 r/w max 10% -> ${new_rmax}"
+    _note "检测高重传 (${retrans_pct_num}%), 降低 r/w max 10% -> ${new_rmax}"
   else
+    # compute utilization percentage
     util_pct=$(awk -v t="$total_mbps" -v b="$BW_Mbps" 'BEGIN{ if(b==0) print 0; else printf "%.2f", t/b*100 }')
-    if awk -v u="$util_pct" 'BEGIN{exit !(u<30)}'; then
+    util_pct_num=$(echo "$util_pct" | awk '{if($0+0==$0) printf "%.2f", $0; else print 0}')
+    if awk -v u="$util_pct_num" 'BEGIN{exit !(u<30)}'; then
       new_rmax=$(( cur_rmax * 11 / 10 )); new_wmax=$(( cur_wmax * 11 / 10 ))
       [ "$new_rmax" -gt "$MAX_BYTES" ] && new_rmax="$MAX_BYTES"
       [ "$new_wmax" -gt "$MAX_BYTES" ] && new_wmax="$MAX_BYTES"
       change=1
-      _note "利用率低 (${util_pct}%), 小幅提升 r/w max -> ${new_rmax}"
+      _note "利用率低 (${util_pct_num}%), 小幅提升 r/w max -> ${new_rmax}"
     fi
   fi
 
   if [ "$change" -eq 1 ]; then
     tmpf="$(mktemp)"
-track_tmp "$tmpf"
+    track_tmp "$tmpf"
     cat > "$tmpf" <<EOF
 # runtime adjusted by net-optimizer-final2 $(date -u)
 net.core.rmem_max = ${new_rmax}
@@ -581,9 +613,9 @@ net.ipv4.tcp_rmem = ${TCP_RMEM_MIN} ${TCP_RMEM_DEF} ${new_rmax}
 net.ipv4.tcp_wmem = ${TCP_WMEM_MIN} ${TCP_WMEM_DEF} ${new_wmax}
 EOF
     run_or_echo install -m 0644 "$tmpf" "$SYSCTL_TARGET"
-    run_or_echo sysctl --system >/dev/null 2>&1 || _warn "sysctl --system returned non-zero"
+    run_or_echo sysctl --system >/dev/null 2>&1 || _warn "sysctl --system 返回非零"
     rm -f "$tmpf" || true
-    echo "$(date +%s) adjust rmax=${new_rmax} wmax=${new_wmax} mbps=${total_mbps} retrans=${retrans_pct}" >> "${BACKUP_DIR}/runtime.log"
+    echo "$(date +%s) adjust rmax=${new_rmax} wmax=${new_wmax} mbps=${total_mbps} retrans=${retrans_pct_num}" >> "${BACKUP_DIR}/runtime.log"
     _ok "runtime 调整已应用"
   else
     _note "runtime 调整：无需变更"
@@ -654,7 +686,7 @@ _note "若要回滚: sudo $ROLLBACK"
 if [ -n "$ROLLBACK_DIR" ]; then
   if [ -x "${ROLLBACK_DIR}/rollback.sh" ]; then
     _note "执行回滚脚本: ${ROLLBACK_DIR}/rollback.sh (会提示确认)"
-    if [ "$APPLY" -eq 1 ]; then
+    if [ "${APPLY:-0}" -eq 1 ]; then
       read -r -p "确认执行回滚吗？(yes/NO): " ans
       if [ "$ans" = "yes" ]; then
         bash "${ROLLBACK_DIR}/rollback.sh"
