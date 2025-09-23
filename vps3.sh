@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# net-optimizer-final2.sh
-# Final unified network/hardware/process optimizer
-# Integrates all code snippets you provided, fixes RTT detection and arithmetic syntax issues.
-# Usage:
-#   sudo ./net-optimizer-final2.sh --dry-run --mode normal
-#   sudo ./net-optimizer-final2.sh --apply --mode aggressive --rtt 200
-#   sudo ./net-optimizer-final2.sh --rollback /var/backups/...
 set -euo pipefail
 IFS=$'\n\t'
 
