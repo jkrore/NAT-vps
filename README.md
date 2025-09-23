@@ -1,157 +1,133 @@
+# NAT-vps 终极 VPS 优化套件
 
+[![Language](https://img.shields.io/badge/Language-Bash-blue.svg)](https://www.gnu.org/software/bash/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-***
+本项目是一套为 Linux VPS 设计的终极性能优化脚本，旨在通过自动化和智能化的方式，最大化服务器的网络吞吐能力和系统综合性能。
 
-# Ultimate VPS 优化套件：完整终极指南
-
-本指南为您提供 `jkrore/NAT-vps` 仓库中两个核心优化脚本 `vps.sh` 和 `vps2.sh` 的详尽说明，从“一键命令”到“深度解析”，涵盖您需要了解的一切。
-
-### 核心设计理念
-*   **安全第一**: 所有脚本默认以**预览模式 (Dry Run)** 运行，只显示操作计划，不修改系统。
-*   **备份先行**: 在修改任何重要配置文件前，脚本会自动创建备份。
-*   **智能检测**: 脚本会尝试分析您的系统环境（如网络延迟、硬件配置），以应用最合适的优化参数。
-
-### 基本要求
-*   **必须以 `root` 用户身份执行所有命令。**
-*   您的系统需要安装 `wget`。 (通常都已预装)
+### ✨ 项目理念
+*   **安全第一**: 所有脚本默认以**预览模式 (Dry Run)** 运行，在您明确授权 (`--apply`) 前，绝不修改系统。
+*   **智能适配**: 脚本会尝试自动检测您的系统环境（网络延迟、硬件配置），以应用最合适的优化参数。
+*   **全面优化**: 不仅优化网络内核，更涵盖了**系统I/O、CPU调度、网卡硬件**等多个维度，实现真正的“系统级”性能提升。
+*   **模块化设计**: 您可以像搭积木一样，自由选择需要的优化模块，满足个性化需求。
 
 ---
 
-## 第一部分：一键命令终极指南
+## 🚀 一键上手 (Quick Start)
 
-这是最核心的部分，直接复制粘贴即可使用。
+> **重要**: 请始终以 `root` 用户身份执行。建议遵循 **“先优化网络，再优化系统”** 的顺序。
 
-### `vps.sh` (系统综合优化)
-此脚本优化 I/O、系统限制、清理服务、调整 CPU 等。
+### 1. 网络专项优化 (`vps2.sh`)
 
-#### **1. 一键预览 (绝对安全)**
-此命令会下载并执行脚本，**显示**它计划进行的所有更改，但**不会**对您的系统做任何实际修改。这是**必须执行**的第一步。
+此脚本是性能提升的核心，通过科学计算BDP来精细调校网络。
+
+#### **第1步: 获取您真实的延迟(RTT)**
+在**您自己的电脑**上 (而不是VPS上) 打开终端或CMD，执行 `ping` 命令：
+```bash
+ping <您的VPS IP地址>
+```
+记下返回的平均 `时间=` 或 `time=` 值，例如 `197ms`。
+
+#### **第2步: 执行优化**
+将下面命令中的 `197` 替换为您刚刚测得的真实延迟值。
 
 ```bash
-wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh | bash -s -- --all
+# 推荐的标准模式
+wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --apply --rtt 197
+
+# 追求极致性能的激进模式 (有安全风险, 需要重启)
+wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --apply --mode aggressive --rtt 197
 ```
 
-#### **2. 一键应用 (执行修改)**
-**警告：此命令会实际修改您的系统配置。** 请务必先运行上面的预览命令，确认所有操作都符合您的预期后，再执行此命令。
+### 2. 系统综合优化 (`vps.sh`)
+
+此脚本作为补充，用于优化I/O、清理服务、安装实用工具等。
 
 ```bash
-wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh | bash -s -- --apply --all
+# 推荐的安全优化组合 (优化I/O + 安装动态调优服务 + 生成工具)
+wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh | bash -s -- --apply --apply-io-limits --install-hw-tuning --generate-tools
 ```
 
----
-
-### `vps2.sh` (网络专项优化)
-此脚本通过科学计算 BDP (带宽时延积) 来精细调整网络参数，开启 BBR，最大化网络吞吐量。
-
-#### **1. 一键预览 (绝对安全)**
-此命令会分析您的网络环境并**显示**推荐的网络参数，但**不会**保存它们。
-
+### 3. 重启服务器 (如果需要)
+如果您在任何步骤中使用了 `aggressive` 模式或 `--apply-grub` 模块，**必须重启服务器**才能使所有设置生效。
 ```bash
-wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash
-```
-
-#### **2. 一键应用 (执行修改)**
-**警告：此命令会实际修改您的网络配置。** 请务必先运行上面的预览命令，确认参数无误后，再执行此命令。
-
-```bash
-wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --apply
-```
-
-#### **3. [进阶] 激进模式应用**
-此模式会额外修改 GRUB 启动项以禁用 CPU 安全漏洞补丁，可提升性能但有**安全风险**，且**需要重启**才能生效。
-
-```bash
-# 预览激进模式
-wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --mode aggressive
-
-# 应用激进模式
-wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --apply --mode aggressive
+sudo reboot
 ```
 
 ---
 
-## 第二部分：推荐的优化流程
+## 📖 脚本深度解析
 
-对于一台全新的服务器，请遵循以下步骤以获得最佳效果：
+### `vps2.sh` (网络专项优化脚本)
 
-1.  **先优化网络**:
-    *   执行 `vps2.sh` 的**预览**命令。
-    *   检查输出的参数是否合理。
-    *   执行 `vps2.sh` 的**应用**命令。
+这是本套件的灵魂。它摒弃了固定的“魔法数值”，采用动态计算的方式为您的服务器量身定制网络参数。
 
-2.  **再优化系统**:
-    *   执行 `vps.sh` 的**预览**命令。
-    *   仔细检查将要被禁用/修改的服务和配置。
-    *   执行 `vps.sh` 的**应用**命令。
+#### 核心功能
+*   **动态RTT检测**: 自动检测网络延迟，作为计算的基础。
+*   **BDP科学计算**: 基于 **带宽 × 延迟** 精确计算出最佳TCP缓冲区大小。
+*   **冲突自动处理**: 自动备份并禁用系统中可能存在的旧版、冲突的网络配置。
+*   **三位一体优化**: 同时优化 **内核(`sysctl`) + 网卡硬件(`ethtool`) + CPU协同(`RPS/XPS`)**。
+*   **安全与回滚**: 强制预览，并为每次修改生成一键回滚脚本。
 
-3.  **重启服务器 (如果需要)**:
-    *   如果您在任何步骤中使用了涉及 GRUB 的优化 (例如 `vps2.sh` 的激进模式或 `vps.sh` 的 `--apply-grub` 模块)，您**必须重启服务器**才能使这些更改生效。
-    *   执行 `sudo reboot`。
+#### 参数指南 (`--parameter`)
 
----
-
-## 第三部分：脚本深度解析
-
-### `vps.sh` (系统综合优化)
-
-*   **目的**: 提供超越网络核心的系统级优化，增强服务器综合性能。
-*   **备份目录**: `/root/ultimate_singularity_backups/`
-
-#### **命令行参数**
-
-| 参数 | 描述 | 风险等级 |
+| 参数 | 作用 | 解释 |
 | :--- | :--- | :--- |
-| `--apply` | 实际应用更改 (默认为预览模式) | - |
-| `--all` | 选择下面所有的优化模块 | - |
-| `--apply-io-limits` | 优化存储 I/O 和系统资源限制 (文件句柄数等) | **低** |
-| `--cleanup-services` | **禁用**不常用的系统服务 (如蓝牙、打印等) | **高** |
-| `--apply-grub` | 为母鸡角色应用 CPU 隔离等 GRUB 参数 | **极高** |
-| `--apply-host-specifics` | 为母鸡角色应用大页内存等特定优化 | **中** |
-| `--generate-tools` | 生成监控和基准测试的辅助脚本 | **低** |
-| `--install-hw-tuning` | 安装并启用一个后台服务，用于动态硬件调优 | **中** |
-
-### `vps2.sh` (网络专项优化)
-
-*   **目的**: 专注于最大化网络吞吐量和降低延迟，是提升网络性能的核心脚本。
-*   **备份目录**: `/var/backups/net-optimizer/`
-
-#### **命令行参数**
-
-| 参数 | 描述 |
-| :--- | :--- |
-| `--apply` | 实际应用更改 (默认为预览模式)。 |
-| `--mode normal\|aggressive` | `normal` 为标准优化。`aggressive` 会额外禁用 CPU 安全补丁 (有风险，需重启)。 |
-| `--rtt <毫秒>` | 手动指定网络的 RTT (延迟) 值，覆盖自动检测。 |
-| `--iperf <IP地址>` | 在优化后，对指定的服务器运行 iperf3 带宽测试。 |
-| `--rollback <备份目录>` | 从指定的备份目录中恢复配置。 |
-
-#### **核心操作详解**
-
-1.  **RTT 与 BDP 计算**: 脚本的核心。它会自动检测到您服务器的延迟(RTT)，然后结合带宽(默认1000Mbps)计算出**带宽时延积(BDP)**。BDP 是优化 TCP 缓冲区的最关键科学依据。
-2.  **备份与冲突清理**: 在应用任何设置前，它会扫描现有的 `sysctl` 配置文件，将冲突的旧设置备份并禁用，同时生成一个一键回滚脚本 `rollback.sh` 存放在备份目录中。
-3.  **Sysctl 参数配置**: 基于 BDP 的计算结果，生成一个全新的配置文件 `/etc/sysctl.d/999-net-optimizer.conf`，其中包含：
-    *   **开启 BBRv2/BBRv3**: 设置 `net.ipv4.tcp_congestion_control = bbr` 和 `net.core.default_qdisc = fq`。
-    *   **优化 TCP 缓冲区**: 科学地设置 `tcp_rmem` 和 `tcp_wmem` 等核心参数。
-    *   **其他 TCP/IP 栈优化**: 启用 TCP Fast Open、窗口缩放等现代化特性。
-4.  **网卡与 CPU 调优**:
-    *   **CPU 调速器**: 将 CPU 设置为 `performance` 模式，确保最大性能。
-    *   **中断绑定**: 将网卡的中断(IRQ)分散到不同的 CPU 核心上，避免单核瓶颈。
-    *   **RPS/XPS**: 开启网卡的多核处理能力，进一步分散网络数据包处理压力。
+| **(无参数)** | **安全预览** | 默认模式，只看不做，绝对安全。 |
+| `--apply` | **确认应用** | 授权脚本开始修改您的系统。 |
+| `--mode normal` | **标准模式** | 默认模式，应用BBR+FQ等标准网络优化。 |
+| `--mode aggressive` | **激进模式** | 额外启用`cake`队列并尝试禁用CPU安全补丁，**需要重启**。 |
+| `--rtt <毫秒>` | **指定延迟** | **最关键的参数**。强制脚本使用您测得的精确延迟值。 |
+| `--iperf <IP>` | **性能测试** | 优化后，立即对指定的`iperf3`服务端IP进行带宽测试。 |
+| `--rollback <路径>` | **执行回滚** | 从指定的备份目录恢复配置。 |
 
 ---
 
-## 第四部分：安全与回滚
+### `vps.sh` (系统综合优化脚本)
 
-两个脚本都设计了完善的备份机制。
+此脚本是 `vps2.sh` 的完美搭档，负责网络之外的系统级优化。它采用完全模块化的设计，您可以自由组合。
 
-*   对于 `vps.sh`，所有被修改的文件的原始版本都会被备份到 `/root/ultimate_singularity_backups/` 下的一个带时间戳的目录中。
-*   对于 `vps2.sh`，它会创建一个功能更强大的备份，位于 `/var/backups/net-optimizer/`。每个备份目录里都包含一个 `rollback.sh` 脚本。
+#### 模块化参数指南
 
-#### **如何使用 `vps2.sh` 的回滚功能？**
+| 参数 | 模块名称 | 风险等级 | 解释 |
+| :--- | :--- | :--- | :--- |
+| `--apply-io-limits` | I/O与资源限制 | **低** | 优化SSD/NVMe硬盘读写，大幅提升文件句柄数。**强烈推荐**。 |
+| `--install-hw-tuning` | 硬件动态调优 | **中** | 安装后台服务，持续优化CPU频率和网卡缓冲区。**强烈推荐**。 |
+| `--generate-tools` | 生成辅助工具 | **极低** | 创建两个实用的监控和基准测试脚本。 |
+| `--cleanup-services` | 服务清理 | **高** | **禁用**大量常见服务，可能误关您需要的服务，请谨慎使用。 |
+| `--apply-grub` | GRUB 优化 | **极高** | **仅限母鸡(Host)使用**，用于CPU隔离，普通VPS**绝对不要用**。 |
+| `--apply-host-specifics` | 母鸡特定优化 | **高** | **仅限母鸡(Host)使用**，配置大页内存，普通VPS**不要用**。 |
+| `--all` | 应用所有模块 | **极高** | 一键启用以上所有模块，请确保您了解其全部内容。 |
 
-1.  首先，找到您想要回滚到的备份目录，例如 `/var/backups/net-optimizer/net-optimizer-2025-09-23-071400`。
-2.  执行以下命令 (**需要 `--apply` 参数来确认执行**):
+---
 
-    ```bash
-    wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --apply --rollback /var/backups/net-optimizer/net-optimizer-2025-09-23-071400
-    ```
+## 🛠️ 进阶指南
+
+### 网页UI工具 (“TCP 迷之调参”)
+
+您可能见过类似下图的网页工具。它是一个非常优秀的**参数计算器**，可以帮您直观地获得 `vps2.sh` 所需的核心参数。
+
+
+
+*   **如何使用它**:
+    1.  在您本地电脑 `ping` 您的服务器，得到精确的**网络延迟(ms)**。
+    2.  在UI上填入您的**服务器带宽**、**网络延迟**等参数。
+    3.  这个UI可以帮您直观地理解各项参数的作用，但我们**最终仍然推荐使用 `vps2.sh` 脚本来执行**，因为它提供了更深度的系统级优化（CPU+网卡）。
+    4.  您可以将从UI上得到的参数，通过命令行参数（如`--rtt`）传递给 `vps2.sh` 脚本。
+
+### 安全与回滚
+
+*   **`vps2.sh`**:
+    *   **备份目录**: `/var/backups/net-optimizer/`
+    *   **回滚方法**: 每个备份目录内都有一个 `rollback.sh` 脚本。通过以下命令执行回滚：
+      ```bash
+      # 将路径替换成您的备份目录
+      wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -s -- --apply --rollback /var/backups/net-optimizer/net-optimizer-xxxx
+      ```
+
+*   **`vps.sh`**:
+    *   **备份目录**: `/root/ultimate_singularity_backups/`
+    *   **回滚方法**: 手动恢复。进入对应的备份目录，找到被修改文件的备份（`.bak`后缀），手动将其复制回原位。
+
+### 免责声明
+本项目脚本旨在提升服务器性能，但任何系统层面的修改都伴随着风险。请在执行前确保您已备份重要数据。因使用本脚本造成的任何问题，作者不承担任何责任。
