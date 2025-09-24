@@ -400,12 +400,13 @@ apply_basics_module(){
 }
 disable_ipv6_module(){
   log "禁用IPv6..."
-  local IPV_SYSCTL="/etc/sysctl.d/97-disable-ipv6.conf"
+  local IPV6_SYSCTL="/etc/sysctl.d/97-disable-ipv6.conf"
   local ipv6_content="net.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1"
   write_file_safe "$IPV6_SYSCTL" "$ipv6_content"
   apply_or_echo "sysctl -p ${IPV6_SYSCTL}"
   ok "IPv6禁用模块已处理"
 }
+
 
 # ---------- 主流程 (恢复正确结构) ----------
 main(){
