@@ -269,13 +269,23 @@ install_hw_tuning_module(){
   read -r -d '' HW_CONTENT <<'EOF' || true
 #!/usr/bin/env bash
 set -euo pipefail; IFS=$'\n\t'; CPU_COUNT=$(nproc || echo 1); ALL_NICS=( $(ls /sys/class/net | grep -v lo || true) )
-for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do [[ -f "$gov" ]] && echo performance > "$gov" 2>/dev/null || true; done
+# store current rx/tx ring sizes to /var/log/ultimate-hw-ai.orig (for rollbacks)
+mkdir -p /var/log
 for NIC in "${ALL_NICS[@]}"; do
-  [[ -d "/sys/class/net/$NIC" && "$(cat /sys/class/net/$NIC/operstate' 2>/dev/null)" == "up" ]] || continue
+  [[ -d "/sys/class/net/$NIC" ]] || continue
+  oper=$(cat /sys/class/net/$NIC/operstate 2>/dev/null || echo down)
+  [[ "$oper" == "up" ]] || continue
   rx_old=$(cat /sys/class/net/$NIC/statistics/rx_bytes 2>/dev/null || echo 0); sleep 1; rx_new=$(cat /sys/class/net/$NIC/statistics/rx_bytes 2>/dev/null || echo 0)
   rx_speed=$((rx_new - rx_old)); rx_ring=1024
   if [[ $rx_speed -gt 200000000 ]]; then rx_ring=8192; elif [[ $rx_speed -gt 100000000 ]]; then rx_ring=4096; elif [[ $rx_speed -gt 50000000 ]]; then rx_ring=2048; fi
-  if command -v ethtool >/dev/null 2>&1; then ethtool -G "$NIC" rx "$rx_ring" tx "$rx_ring" >/dev/null 2>&1 || true; ethtool -K "$NIC" gso off gro off tso off lro off >/dev/null 2>&1 || true; fi
+  if command -v ethtool >/dev/null 2>&1; then
+    # record existing values if possible
+    old_rx=$(ethtool -g "$NIC" 2>/dev/null | awk '/RX:/ {print $2; exit}' || true)
+    old_tx=$(ethtool -g "$NIC" 2>/dev/null | awk '/TX:/ {print $2; exit}' || true)
+    echo "$NIC old_rx=$old_rx old_tx=$old_tx" >> /var/log/ultimate-hw-ai.orig || true
+    ethtool -G "$NIC" rx "$rx_ring" tx "$rx_ring" >/dev/null 2>&1 || true
+    ethtool -K "$NIC" gso off gro off tso off lro off >/dev/null 2>&1 || true
+  fi
 done
 for dev in /sys/block/*/queue/read_ahead_kb; do [[ -f "$dev" ]] && echo 128 > "$dev" 2>/dev/null || true; done
 EOF
