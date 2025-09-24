@@ -28,12 +28,8 @@ EOF
   exit 1
 }
 
-
-
 # 生成前 n 个 CPU 的 cpumask（hex），例如 n=1 -> 1, n=2 -> 3, n=8 -> ff
 # 返回不带0x前缀的小写十六进制字符串，兼容写入 rps/xps sysfs
-# 生成前 n 个 CPU 的 cpumask（hex），例如 n=1 -> 1, n=2 -> 3, n=8 -> ff
-# 返回不带0x前缀的小写十六进制字符串
 cpu_mask_for_cores(){
   local n=$(to_pos_int "$1")
   if [ "$n" -le 0 ]; then printf "1"; return; fi
@@ -101,7 +97,6 @@ cleanup_tmp(){
   done
 }
 trap cleanup_tmp EXIT
-
 
 # ---------------- utilities ----------------
 has(){ command -v "$1" >/dev/null 2>&1; }
@@ -274,7 +269,10 @@ for d in /usr/local/lib/sysctl.d /usr/lib/sysctl.d /lib/sysctl.d /run/sysctl.d; 
 done
 
 # ---------------- load bbr ----------------
-if has modprobe; then run_or_echo modprobe tcp_bbr 2>/dev/null || true; _ok "尝试加载 tcp_bbr"; fi
+if has modprobe; then
+  run_or_echo modprobe tcp_bbr 2>/dev/null || true
+  _ok "尝试加载 tcp_bbr"
+fi
 
 # ---------------- generate sysctl ----------------
 TMP_SYSCTL="$(mktemp)"
@@ -343,10 +341,13 @@ _note "候选接口: ${IFACES[*]:-none}"
 
 tune_ethtool(){
   local ifn="$1"
-  if ! has ethtool; 键，然后 _warn "无 ethtool，跳过 $ifn"; return; fi
+  if ! has ethtool; then
+    _warn "无 ethtool，跳过 $ifn"
+    return
+  fi
   local supports
   supports=$(ethtool -k "$ifn" 2>/dev/null || true)
-  for feat 在 tso gso gro tx rx sg txvlan rxvlan; do
+  for feat in tso gso gro tx rx sg txvlan rxvlan; do
     if echo "$supports" | grep -qi "^${feat}:"; then
       run_or_echo ethtool -K "$ifn" "$feat" on 2>/dev/null || true
     fi
@@ -359,12 +360,12 @@ set_rps_xps(){
   [ "$rps_cores" -lt 1 ] && rps_cores=1
   local cpumask_hex; cpumask_hex=$(cpu_mask_for_cores "$rps_cores")
   local qdir="/sys/class/net/${ifn}/queues"
-  if [ -d "$qdir" ]; 键，然后
-    for rxq 在 "$qdir"/rx-*; do
+  if [ -d "$qdir" ]; then
+    for rxq in "$qdir"/rx-*; do
       [ -e "$rxq/rps_cpus" ] || continue
       write_sysfs_value "$rxq/rps_cpus" "$cpumask_hex" || _warn "写入 $rxq/rps_cpus 失败"
     done
-    for txq 在 "$qdir"/tx-*; do
+    for txq in "$qdir"/tx-*; do
       [ -e "$txq/xps_cpus" ] || continue
       write_sysfs_value "$txq/xps_cpus" "$cpumask_hex" || _warn "写入 $txq/xps_cpus 失败"
     done
@@ -386,7 +387,7 @@ assign_irqs_to_cpus(){
       fi
       mask=$(printf "%x" $((1 << idx)))
       aff="/proc/irq/${irq}/smp_affinity"
-      if [ -w "$aff" ]; 键，然后
+      if [ -w "$aff" ]; then
         run_or_echo bash -c "printf '%s' ${mask} > ${aff}"
       else
         _warn "不可写：$aff"
@@ -396,8 +397,7 @@ assign_irqs_to_cpus(){
   _ok "尝试为 $ifn 分配 IRQ affinity"
 }
 
-
-for ifn 在 "${IFACES[@]:-}"; do
+for ifn in "${IFACES[@]:-}"; do
   _note "处理接口: $ifn"
   tune_ethtool "$ifn"
   set_rps_xps "$ifn"
@@ -405,10 +405,11 @@ for ifn 在 "${IFACES[@]:-}"; do
 done
 
 # ---------------- CPU governor & cpuset ----------------
-if has cpupower; 键，然后 run_or_echo cpupower frequency-set -g performance >/dev/null 2>&1 || true
+if has cpupower; then
+  run_or_echo cpupower frequency-set -g performance >/dev/null 2>&1 || true
 else
   if [ -d /sys/devices/system/cpu/cpu0/cpufreq ]; then
-    for cpu 在 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
       [ -w "$cpu" ] && run_or_echo bash -c "printf 'performance' > $cpu" || true
     done
   fi
@@ -429,10 +430,10 @@ fi
 
 # ---------------- qdisc ----------------
 IFACE=$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -1 || true)
-if has tc && [ -n "$IFACE" ]; 键，然后
+if has tc && [ -n "$IFACE" ]; then
   QDISC="fq"
-  if [ "$MODE" = "aggressive" ]; 键，然后
-    if tc qdisc add dev lo root cake 2>/dev/null; 键，然后
+  if [ "$MODE" = "aggressive" ]; then
+    if tc qdisc add dev lo root cake 2>/dev/null; then
       tc qdisc del dev lo root 2>/dev/null || true
       QDISC="cake"
     fi
@@ -444,8 +445,8 @@ fi
 # ---------------- DNS optimize ----------------
 dns_opt(){
   local DNS_LIST="1.1.1.1 8.8.8.8 9.9.9.9"
-  if [ -L /etc/resolv.conf ] && readlink /etc/resolv.conf | grep -qi systemd; 键，然后
-    if has resolvectl; 键，然后
+  if [ -L /etc/resolv.conf ] && readlink /etc/resolv.conf | grep -qi systemd; then
+    if has resolvectl; then
       [ -n "$IFACE" ] && run_or_echo resolvectl dns "$IFACE" $DNS_LIST || true
       run_or_echo mkdir -p /etc/systemd/resolved.conf.d
       cat > /etc/systemd/resolved.conf.d/10-dns-opt.conf <<'EOF'
@@ -461,7 +462,7 @@ EOF
       _ok "写入 systemd-resolved drop-in"
     fi
   else
-    if [ -f /etc/resolv.conf ]; 键，然后
+    if [ -f /etc/resolv.conf ]; then
       run_or_echo cp -a /etc/resolv.conf "${BACKUP_DIR}/resolv.conf.bak.${TIMESTAMP}"
       run_or_echo bash -c 'cat > /etc/resolv.conf <<EOF
 nameserver 1.1.1.1
@@ -478,10 +479,10 @@ dns_opt
 # ---------------- iperf hook ----------------
 iperf_hook(){
   if [ "$RUN_IPERF" -eq 0 ] || ! has iperf3; then return; fi
-  for s 在 "${IPERF_SERVERS[@]:-}"; do
+  for s in "${IPERF_SERVERS[@]:-}"; do
     _note "iperf3 -> $s"
     if iperf3 -c "$s" -t 10 -J >/tmp/.iperf.json 2>/dev/null; then
-      if has jq; 键，然后
+      if has jq; then
         DL=$(jq -r '.end.sum_received.bits_per_second // 0' /tmp/.iperf.json)
         UL=$(jq -r '.end.sum_sent.bits_per_second // 0' /tmp/.iperf.json)
       else
@@ -504,7 +505,7 @@ runtime_adaptive(){
   touch "$MON_LOG"
   local total_retrans=0 total_segs_out=0
   total_retrans=0; total_segs_out=0
-  if has ss; 键，然后
+  if has ss; then
     while IFS= read -r line; do
       r=$(echo "$line" | grep -Po 'retrans:\d+/\K\d+' || echo 0)
       s=$(echo "$line" | grep -Po 'segs_out:\K\d+' || echo 0)
@@ -534,7 +535,7 @@ runtime_adaptive(){
   done
 
   local total_mbps=0; total_mbps=0
-  for ifn 在 "${IFACES[@]:-}"; do
+  for ifn in "${IFACES[@]:-}"; do
     rxd=$(( (rx2[$ifn] - rx1[$ifn]) )); txd=$(( (tx2[$ifn] - tx1[$ifn]) ))
     rxd=${rxd:-0}; txd=${txd:-0}
     mbps=$(( (rxd + txd) * 8 / 1000000 ))
@@ -565,7 +566,7 @@ runtime_adaptive(){
 
   if [ "$change" -eq 1 ]; then
     tmpf="$(mktemp)"
-track_tmp "$tmpf"
+    track_tmp "$tmpf"
     cat > "$tmpf" <<EOF
 # runtime adjusted by net-optimizer-final2 $(date -u)
 net.core.rmem_max = ${new_rmax}
