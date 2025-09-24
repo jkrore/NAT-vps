@@ -644,7 +644,29 @@ _note "Backups & rollback in: $BACKUP_DIR"
 _note "若要回滚: sudo $ROLLBACK"
 
 check_bbr_versions
+# ---------------- BBR & Kernel Version Check ----------------
+check_bbr_versions(){
+    _note "==== 内核与BBR版本分析 ===="
+    local kernel_version
+    kernel_version=$(uname -r)
+    _note "当前内核版本: ${kernel_version}"
 
+    local available_cc
+    available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "cubic reno")
+    _note "可用拥塞控制算法: ${available_cc}"
+
+    if [[ "$available_cc" == *"bbr"* ]]; then
+        _ok "系统支持 BBR。脚本已默认启用。"
+        # 简单的版本比较
+        if [[ "$(printf '%s\n' "5.18" "$kernel_version" | sort -V | head -n1)" == "5.18" ]]; then
+            _note "提示: 您的内核版本较新，可能已包含 BBRv2 的部分特性。社区中有通过更换内核（如xanmod）以启用完整 BBRv2/v3 的讨论，但这属于高风险操作，请自行研究。"
+        else
+            _warn "提示: 您的内核版本较低。升级内核可能会带来更新的BBR算法和性能改进，但存在风险。"
+        fi
+    else
+        _err "错误: 系统不支持 BBR。此脚本的核心优化无法生效。"
+    fi
+}
 
 # ---------------- rollback invocation if requested ----------------
 if [ -n "$ROLLBACK_DIR" ]; then
@@ -665,27 +687,5 @@ if [ -n "$ROLLBACK_DIR" ]; then
     _err "未在 ${ROLLBACK_DIR} 找到可执行 rollback.sh"
   fi
 fi
-# ---------------- BBR & Kernel Version Check ----------------
-check_bbr_versions(){
-    _note "==== 内核与BBR版本分析 ===="
-    local kernel_version
-    kernel_version=$(uname -r)
-    _note "当前内核版本: ${kernel_version}"
 
-    local available_cc
-    available_cc=$(sysctl net.ipv4.tcp_available_congestion_control | awk -F'= ' '{print $2}')
-    _note "可用拥塞控制算法: ${available_cc}"
-
-    if [[ "$available_cc" == *"bbr"* ]]; then
-        _ok "系统支持 BBR。脚本已默认启用。"
-        # 简单的版本比较
-        if [[ "$(printf '%s\n' "5.18" "$kernel_version" | sort -V | head -n1)" == "5.18" ]]; then
-            _note "提示: 您的内核版本较新，可能已包含 BBRv2 的部分特性。社区中有通过更换内核（如xanmod）以启用完整 BBRv2/v3 的讨论，但这属于高风险操作，请自行研究。"
-        else
-            _warn "提示: 您的内核版本较低。升级内核可能会带来更新的BBR算法和性能改进，但存在风险。"
-        fi
-    else
-        _err "错误: 系统不支持 BBR。此脚本的核心优化无法生效。"
-    fi
-}
 exit 0
