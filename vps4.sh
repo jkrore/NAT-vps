@@ -643,7 +643,6 @@ if has tc && [ -n "$IFACE" ]; then echo "qdisc on ${IFACE}:"; tc qdisc show dev 
 _note "Backups & rollback in: $BACKUP_DIR"
 _note "若要回滚: sudo $ROLLBACK"
 
-check_bbr_versions
 # ---------------- BBR & Kernel Version Check ----------------
 check_bbr_versions(){
     _note "==== 内核与BBR版本分析 ===="
@@ -668,6 +667,9 @@ check_bbr_versions(){
     fi
 }
 
+# 在定义之后，只调用一次
+check_bbr_versions
+
 # ---------------- rollback invocation if requested ----------------
 if [ -n "$ROLLBACK_DIR" ]; then
   if [ -x "${ROLLBACK_DIR}/rollback.sh" ]; then
@@ -689,3 +691,4 @@ if [ -n "$ROLLBACK_DIR" ]; then
 fi
 
 exit 0
+
