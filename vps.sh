@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-# Ultimate Singularity - Supplemental Modules Script
-# Version: 1.0
-# Author: AI 全面分析师 (基于 Ultimate Singularity v2.0)
-#
-# 这个脚本旨在为已经使用过 net-optimizer (代码二) 的用户，
-# 提供 Ultimate Singularity (代码一) 中缺失的、非网络核心的系统级优化功能。
-#
-# 使用方法:
-# 1. 预览所有将要执行的操作: ./script3.sh --dry-run --all
-# 2. 预览单个模块的操作:   ./script3.sh --dry-run --apply-io
-# 3. 应用单个模块:         ./script3.sh --apply --apply-io
-#
 set -euo pipefail
 IFS=$'\n\t'
 
