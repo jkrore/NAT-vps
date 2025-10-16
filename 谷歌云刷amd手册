@@ -1,0 +1,79 @@
+gcloud config get-value project
+nano 刷机脚本.sh
+
+#!/bin/bash
+
+# --- 您的专属配置 (已根据您的截图填写完毕) ---
+
+# 1. 项目 ID:
+PROJECT_ID="hallowed-trail-470604-k2"
+
+# 2. 可用区:
+ZONE="us-west1-a"
+
+# 3. 实例名称列表:
+INSTANCES=("shuaji-1" "shuaji-2" "shuaji-3" "shuaji-4")
+
+# --- 以下代码无需任何修改 ---
+
+echo "✅ 配置加载成功:"
+echo "项目 ID: $PROJECT_ID"
+echo "可用区: $ZONE"
+echo "目标实例: ${INSTANCES[@]}"
+echo "----------------------------------------"
+
+# 无限循环，直到刷到目标
+while true; do
+  echo "🚀 并发启动所有实例..."
+  for INSTANCE in "${INSTANCES[@]}"; do
+    gcloud compute instances start "$INSTANCE" --zone "$ZONE" --project "$PROJECT_ID" --quiet &
+  done
+  wait # 等待所有启动命令发出
+
+  echo "⏳ 等待 60 秒，确保实例完全启动并初始化..."
+  sleep 60
+
+  echo "🔍 开始检查所有实例的 CPU 型号..."
+  FOUND_TARGET=""
+  for INSTANCE in "${INSTANCES[@]}"; do
+    echo -n "  -> 正在检查 $INSTANCE ... "
+    CPU_PLATFORM=$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" --project "$PROJECT_ID" --format='value(cpuPlatform)')
+    
+    if [[ "$CPU_PLATFORM" == *"AMD"* ]]; then
+      echo "🎉 命中 AMD！"
+      FOUND_TARGET="$INSTANCE"
+      break # 找到一个就跳出检查循环
+    else
+      echo "🚫 是 Intel ($CPU_PLATFORM)"
+    fi
+  done
+
+  if [[ -n "$FOUND_TARGET" ]]; then
+    echo "----------------------------------------"
+    echo "✅ 恭喜！实例 '$FOUND_TARGET' 是 AMD CPU！"
+    echo "🛑 正在停止其他非目标实例..."
+    for INSTANCE in "${INSTANCES[@]}"; do
+      if [[ "$INSTANCE" != "$FOUND_TARGET" ]]; then
+        gcloud compute instances stop "$INSTANCE" --zone "$ZONE" --project "$PROJECT_ID" --quiet &
+      fi
+    done
+    wait
+    echo "🎯 刷机任务完成！请保留实例 '$FOUND_TARGET'。"
+    break # 结束整个脚本
+  else
+    echo "----------------------------------------"
+    echo "🚫 本轮未命中目标。正在关停所有实例..."
+    for INSTANCE in "${INSTANCES[@]}"; do
+      gcloud compute instances stop "$INSTANCE" --zone "$ZONE" --project "$PROJECT_ID" --quiet &
+    done
+    wait
+    echo "🔁 30秒后将开始下一轮刷机..."
+    sleep 30
+  fi
+done
+
+
+
+chmod +x 刷机脚本.sh
+tmux
+./刷机脚本.sh
