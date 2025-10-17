@@ -17,3 +17,79 @@ www.visakorea.com
 www.gco.gov.qa
 www.gov.se
 www.gov.ua
+
+
+
+# 🌐 域名/IP 列表（不带引号，每行一个）
+$rawList = @'
+www.csgo.com
+shopify.com
+time.is
+icook.hk
+icook.tw
+ip.sb
+japan.com
+malaysia.com
+russia.com
+singapore.com
+skk.moe
+www.visa.com.sg
+www.visa.com.hk
+www.visa.com.tw
+www.visa.co.jp
+www.visakorea.com
+www.gco.gov.qa
+www.gov.se
+www.gov.ua
+'@ -split "`r?`n"
+
+# 📦 存储结果
+$results = @()
+$jobs = @()
+
+# 🚀 并发 ping（每个任务独立处理异常）
+foreach ($target in $rawList) {
+    if ($target.Trim() -ne "") {
+        $jobs += Start-Job -ScriptBlock {
+            param($t)
+            try {
+                $ping = Test-Connection -Count 3 -ComputerName $t -ErrorAction Stop
+                $avg = ($ping | Measure-Object -Property ResponseTime -Average).Average
+                [PSCustomObject]@{ Target = $t; AvgLatency = [math]::Round($avg, 2); Status = "✅ 正常" }
+            } catch {
+                [PSCustomObject]@{ Target = $t; AvgLatency = $null; Status = "❌ 超时/失败" }
+            }
+        } -ArgumentList $target
+    }
+}
+
+# ⏳ 等待任务完成
+$jobs | ForEach-Object { Wait-Job $_ }
+
+# 📥 收集结果
+foreach ($job in $jobs) {
+    try {
+        $output = Receive-Job $job
+        $results += $output
+    } catch {
+        $results += [PSCustomObject]@{ Target = "未知任务"; AvgLatency = $null; Status = "❌ 接收失败" }
+    }
+    Remove-Job $job
+}
+
+# 📊 排序输出
+$success = $results | Where-Object { $_.AvgLatency -ne $null } | Sort-Object AvgLatency
+$failed  = $results | Where-Object { $_.AvgLatency -eq $null }
+
+Write-Host "`n🏆 Ping 延迟排行榜（单位：ms）" -ForegroundColor Cyan
+$success | ForEach-Object {
+    Write-Host ("{0,-30} : {1,6} ms {2}" -f $_.Target, $_.AvgLatency, $_.Status) -ForegroundColor Green
+}
+
+if ($failed.Count -gt 0) {
+    Write-Host "`n❌ 无法 ping 的目标：" -ForegroundColor Red
+    $failed | ForEach-Object {
+        Write-Host ("{0,-30} : {1}" -f $_.Target, $_.Status) -ForegroundColor DarkRed
+    }
+}
+
