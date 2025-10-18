@@ -48,6 +48,11 @@ wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps2.sh | bash -
 wget -O - https://raw.githubusercontent.com/jkrore/NAT-vps/main/vps.sh | bash -s -- --apply --apply-io-limits --install-hw-tuning --generate-tools
 ```
 
+```bash
+# 推荐的安全优化组合 (优化I/O + 安装动态调优服务 + 生成工具)
+curl -sL https://raw.githubusercontent.com/jkrore/NAT-vps/main/vip0.sh | bash -s --  --apply --apply-io-limits  --apply-cpu-tuning --apply-memory-tuning --cleanup-services --apply-host-specifics --apply-zram --apply-fstab --apply-basics --apply-hardening
+```
+
 ### 3. 重启服务器 (如果需要)
 如果您在任何步骤中使用了 `aggressive` 模式或 `--apply-grub` 模块，**必须重启服务器**才能使所有设置生效。
 ```bash
