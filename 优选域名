@@ -1,3 +1,49 @@
+youxuan.cf.090227.xyz
+this-is-the-preferred-free-option.if-you-paid.youve-been-scammed.xn--4oqr7c4y9alz8a26c.xn--ykqqh3ob280k4sui1xhg6a0ti2u7a.cloudflare.byoip.top
+yongboss.cloudflare.byoip.top
+优选.cf.090227.xyz
+cf.tencentapp.cn
+123.cf.090227.xyz
+www.visa.cn
+mfa.gov.ua
+www.shopify.com
+store.ubi.com
+staticdelivery.nexusmods.com
+www.visa.cn
+mfa.gov.ua
+www.shopify.com
+store.ubi.com
+staticdelivery.nexusmods.com
+time.is
+icook.hk
+icook.tw
+cf.tencentapp.cn
+cloudflare-dl.byoip.top
+cf.877774.xyz
+saas.sin.fan
+bestcf.030101.xyz
+cf.cloudflare.182682.xyz
+bestcf.030101.xyz#Mingyu维护
+cdn.2020111.xyz
+cdns.doon.eu.org
+cf.0sm.com
+cf.877771.xyz
+cf.877774.xyz#秋名山维护
+cf.900501.xyz
+cfip.1323123.xyz
+cfip.cfcdn.vip
+cfip.xxxxxxxx.tk#OTC维护
+cloudflare.182682.xyz#WeTest.Vip维护
+cloudflare-dl.byoip.top
+cloudflare-ip.mofashi.ltd
+fn.130519.xyz
+freeyx.cloudflare88.eu.org
+nrt.xxxxxxxx.nyc.mn
+nrtcfdns.zone.id
+saas.sin.fan
+tencentapp.cn#ktff维护
+xn--b6gac.eu.org
+777.ai7777777.xyz
 www.csgo.com
 shopify.com
 time.is
@@ -17,11 +63,146 @@ www.visakorea.com
 www.gco.gov.qa
 www.gov.se
 www.gov.ua
+time.cloudflare.com
+shopify.com
+time.is
+icook.hk
+icook.tw
+ip.sb
+japan.com
+malaysia.com
+russia.com
+singapore.com
+skk.moe
+www.visa.com
+www.visa.com.sg
+www.visa.com.hk
+www.visa.com.tw
+www.visa.co.jp
+www.visakorea.com
+www.gco.gov.qa
+www.gov.se
+www.gov.ua
+www.digitalocean.com
+www.csgo.com
+www.shopify.com
+www.whoer.net
+www.whatismyip.com
+www.ipget.net
+www.hugedomains.com
+www.udacity.com
+www.4chan.org
+www.okcupid.com
+www.glassdoor.com
+www.udemy.com
+www.baipiao.eu.org
+cdn.anycast.eu.org
+cdn-all.xn--b6gac.eu.org
+cdn-b100.xn--b6gac.eu.org
+xn--b6gac.eu.org
+edgetunnel.anycast.eu.org
+alejandracaiccedo.com
+nc.gocada.co
+log.bpminecraft.com
+www.boba88slot.com
+gur.gov.ua
+www.zsu.gov.ua
+www.iakeys.com
+edtunnel-dgp.pages.dev
+www.d-555.com
+fbi.gov
+www.sean-now.com
+download.yunzhongzhuan.com
+whatismyipaddress.com
+www.ipaddress.my
+www.pcmag.com
+www.ipchicken.com
+www.iplocation.net
+iplocation.io
+www.who.int
+www.wto.org
+cloudflare.182682.xyz
+bestcf.top
+cdn.2020111.xyZ
+cfip.cfcdn.vip
+cf.0sm.com
+cf.090227.xyz
+cf.zhetengsha.eu.org
+cloudflare.9jy.cc
+cf.zerone-cdn.pp.ua
+cfip.1323123.xyz
+cnamefuckxxs.yuchen.icu
+cfip.xxxxoxxxx.tk
+cloudflare-ip.mofashi.ltd
+115155.xyZ
+cname.xirancdn.us
+f3058171cad.002404.xyz
+speed.marisalnc.com
+8.889288.xyz
+cdn.tzpro.xyz
+cf.877771.xyz
+xn--b6gac.eu.org
+
+
+
+
+
+
+
+
+
+
 
 
 
 # 🌐 域名/IP 列表（不带引号，每行一个）
-$rawList = @'
+$domainInput = @'
+youxuan.cf.090227.xyz
+this-is-the-preferred-free-option.if-you-paid.youve-been-scammed.xn--4oqr7c4y9alz8a26c.xn--ykqqh3ob280k4sui1xhg6a0ti2u7a.cloudflare.byoip.top
+yongboss.cloudflare.byoip.top
+优选.cf.090227.xyz
+cf.tencentapp.cn
+123.cf.090227.xyz
+www.visa.cn
+mfa.gov.ua
+www.shopify.com
+store.ubi.com
+staticdelivery.nexusmods.com
+www.visa.cn
+mfa.gov.ua
+www.shopify.com
+store.ubi.com
+staticdelivery.nexusmods.com
+time.is
+icook.hk
+icook.tw
+cf.tencentapp.cn
+cloudflare-dl.byoip.top
+cf.877774.xyz
+saas.sin.fan
+bestcf.030101.xyz
+cf.cloudflare.182682.xyz
+bestcf.030101.xyz#Mingyu维护
+cdn.2020111.xyz
+cdns.doon.eu.org
+cf.0sm.com
+cf.877771.xyz
+cf.877774.xyz#秋名山维护
+cf.900501.xyz
+cfip.1323123.xyz
+cfip.cfcdn.vip
+cfip.xxxxxxxx.tk#OTC维护
+cloudflare.182682.xyz#WeTest.Vip维护
+cloudflare-dl.byoip.top
+cloudflare-ip.mofashi.ltd
+fn.130519.xyz
+freeyx.cloudflare88.eu.org
+nrt.xxxxxxxx.nyc.mn
+nrtcfdns.zone.id
+saas.sin.fan
+tencentapp.cn#ktff维护
+xn--b6gac.eu.org
+777.ai7777777.xyz
 www.csgo.com
 shopify.com
 time.is
@@ -41,55 +222,175 @@ www.visakorea.com
 www.gco.gov.qa
 www.gov.se
 www.gov.ua
-'@ -split "`r?`n"
+time.cloudflare.com
+shopify.com
+time.is
+icook.hk
+icook.tw
+ip.sb
+japan.com
+malaysia.com
+russia.com
+singapore.com
+skk.moe
+www.visa.com
+www.visa.com.sg
+www.visa.com.hk
+www.visa.com.tw
+www.visa.co.jp
+www.visakorea.com
+www.gco.gov.qa
+www.gov.se
+www.gov.ua
+www.digitalocean.com
+www.csgo.com
+www.shopify.com
+www.whoer.net
+www.whatismyip.com
+www.ipget.net
+www.hugedomains.com
+www.udacity.com
+www.4chan.org
+www.okcupid.com
+www.glassdoor.com
+www.udemy.com
+www.baipiao.eu.org
+cdn.anycast.eu.org
+cdn-all.xn--b6gac.eu.org
+cdn-b100.xn--b6gac.eu.org
+xn--b6gac.eu.org
+edgetunnel.anycast.eu.org
+alejandracaiccedo.com
+nc.gocada.co
+log.bpminecraft.com
+www.boba88slot.com
+gur.gov.ua
+www.zsu.gov.ua
+www.iakeys.com
+edtunnel-dgp.pages.dev
+www.d-555.com
+fbi.gov
+www.sean-now.com
+download.yunzhongzhuan.com
+whatismyipaddress.com
+www.ipaddress.my
+www.pcmag.com
+www.ipchicken.com
+www.iplocation.net
+iplocation.io
+www.who.int
+www.wto.org
+cloudflare.182682.xyz
+bestcf.top
+cdn.2020111.xyZ
+cfip.cfcdn.vip
+cf.0sm.com
+cf.090227.xyz
+cf.zhetengsha.eu.org
+cloudflare.9jy.cc
+cf.zerone-cdn.pp.ua
+cfip.1323123.xyz
+cnamefuckxxs.yuchen.icu
+cfip.xxxxoxxxx.tk
+cloudflare-ip.mofashi.ltd
+115155.xyZ
+cname.xirancdn.us
+f3058171cad.002404.xyz
+speed.marisalnc.com
+8.889288.xyz
+cdn.tzpro.xyz
+cf.877771.xyz
+xn--b6gac.eu.org
+freeyx.cloudflare88.eu.org
+'@
 
-# 📦 存储结果
-$results = @()
+# ---> 关键点 1: 自动清理输入列表 <---
+# 对列表进行处理：1. 去除注释 (#) 2. 去除首尾空格 3. 筛选非空行 4. 去除重复项
+$rawList = $domainInput -split "`r?`n" | ForEach-Object { ($_.Split('#')[0]).Trim() } | Where-Object { $_ } | Sort-Object -Unique
+
+# ⏱️ 为每次 ping 请求设置一个精准的超时时间（毫秒）
+$timeoutMilliseconds = 1500 # 1.5 秒
+
+# 📦 使用线程安全的集合来存储结果
+$results = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
+
+# 🛠️ 定义将在每个线程中运行的脚本块 (使用 .NET 类以获得最高性能)
+$scriptBlock = {
+    param($target, $timeout)
+    $pingSender = [System.Net.NetworkInformation.Ping]::new()
+    try {
+        $reply = $pingSender.SendPingAsync($target, $timeout).GetAwaiter().GetResult()
+        if ($reply.Status -eq 'Success') {
+            [PSCustomObject]@{ Target = $target; AvgLatency = $reply.RoundtripTime; Status = "✅ 正常" }
+        } else {
+            [PSCustomObject]@{ Target = $target; AvgLatency = $null; Status = "❌ 失败 ($($reply.Status))" }
+        }
+    } catch {
+        [PSCustomObject]@{ Target = $target; AvgLatency = $null; Status = "❌ 超时/解析失败" }
+    } finally {
+        if ($pingSender) {
+            $pingSender.Dispose()
+        }
+    }
+}
+
+# 🚀 配置和创建 Runspace 池
+$maxThreads = [Math]::Min(16, ([System.Environment]::ProcessorCount * 2))
+$runspacePool = [runspacefactory]::CreateRunspacePool(1, $maxThreads)
+$runspacePool.Open()
+
 $jobs = @()
 
-# 🚀 并发 ping（每个任务独立处理异常）
+# 🚀 将所有 Ping 任务异步分配到 Runspace 池中
 foreach ($target in $rawList) {
-    if ($target.Trim() -ne "") {
-        $jobs += Start-Job -ScriptBlock {
-            param($t)
-            try {
-                $ping = Test-Connection -Count 3 -ComputerName $t -ErrorAction Stop
-                $avg = ($ping | Measure-Object -Property ResponseTime -Average).Average
-                [PSCustomObject]@{ Target = $t; AvgLatency = [math]::Round($avg, 2); Status = "✅ 正常" }
-            } catch {
-                [PSCustomObject]@{ Target = $t; AvgLatency = $null; Status = "❌ 超时/失败" }
-            }
-        } -ArgumentList $target
+    $ps = [powershell]::Create()
+    $ps.RunspacePool = $runspacePool
+    $null = $ps.AddScript($scriptBlock).AddArgument($target).AddArgument($timeoutMilliseconds)
+    $jobs += [PSCustomObject]@{
+        Instance = $ps
+        Handle   = $ps.BeginInvoke()
     }
 }
 
-# ⏳ 等待任务完成
-$jobs | ForEach-Object { Wait-Job $_ }
+Write-Host "🚀 已清理并提交 $($jobs.Count) 个唯一 Ping 任务，正在并行处理..."
 
-# 📥 收集结果
+# ⏳ 等待所有任务完成并收集结果
 foreach ($job in $jobs) {
     try {
-        $output = Receive-Job $job
-        $results += $output
+        $output = $job.Instance.EndInvoke($job.Handle)
+        if ($null -ne $output) {
+            $results.Add($output)
+        }
     } catch {
-        $results += [PSCustomObject]@{ Target = "未知任务"; AvgLatency = $null; Status = "❌ 接收失败" }
+        # 脚本块内部已处理了大部分失败情况
+    } finally {
+        $job.Instance.Dispose()
     }
-    Remove-Job $job
 }
 
-# 📊 排序输出
-$success = $results | Where-Object { $_.AvgLatency -ne $null } | Sort-Object AvgLatency
-$failed  = $results | Where-Object { $_.AvgLatency -eq $null }
+# 🧹 关闭并释放 Runspace 池资源
+$runspacePool.Close()
+$runspacePool.Dispose()
 
-Write-Host "`n🏆 Ping 延迟排行榜（单位：ms）" -ForegroundColor Cyan
+# 📊 排序和筛选最终输出
+$finalResults = $results.ToArray()
+
+# ---> 关键点 2: 对成功的连接按延迟 (AvgLatency) 从小到大排序 <---
+$success = $finalResults | Where-Object { $_.AvgLatency -ne $null -and $_.AvgLatency -le 50 } | Sort-Object AvgLatency
+$failed  = $finalResults | Where-Object { $_.AvgLatency -eq $null }
+
+# 清晰地输出标题，指明筛选条件
+Write-Host "`n🏆 Ping 延迟排行榜（延迟 <= 50ms）" -ForegroundColor Cyan
 $success | ForEach-Object {
-    Write-Host ("{0,-30} : {1,6} ms {2}" -f $_.Target, $_.AvgLatency, $_.Status) -ForegroundColor Green
+    Write-Host ("{0,-70} : {1,6} ms {2}" -f $_.Target, $_.AvgLatency, $_.Status) -ForegroundColor Green
 }
 
 if ($failed.Count -gt 0) {
-    Write-Host "`n❌ 无法 ping 的目标：" -ForegroundColor Red
+    Write-Host "`n❌ 无法 Ping 的目标：" -ForegroundColor Red
     $failed | ForEach-Object {
-        Write-Host ("{0,-30} : {1}" -f $_.Target, $_.Status) -ForegroundColor DarkRed
+        Write-Host ("{0,-70} : {1}" -f $_.Target, $_.Status) -ForegroundColor DarkRed
     }
 }
+
+
 
