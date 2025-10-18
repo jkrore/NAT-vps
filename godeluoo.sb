@@ -723,3 +723,37 @@ fi
 main
 
 # End
+
+
+
+
+
+
+
+
+
+
+
+
+set -e
+
+echo "--- Step 1 of 4: Updating package list and installing essential tools... ---"
+apt-get update
+apt-get install -y gnupg curl ethtool clang
+
+echo "--- Step 2 of 4: Securely adding the XanMod repository... ---"
+curl -fsSL https://dl.xanmod.org/archive.key | gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg
+echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod.list
+
+echo "--- Step 3 of 4: Updating package list again to include XanMod... ---"
+apt-get update
+
+echo "--- Step 4 of 4: Installing the XanMod kernel... ---"
+apt-get install -y linux-xanmod-x64v3
+
+echo "--- SUCCESS! The new kernel is installed. The system will now reboot. ---"
+echo "--- Please wait 2-5 minutes before trying to reconnect with SSH. ---"
+
+reboot
+
+bash 1.sh --apply --mode aggressive --install-xanmod --enable-xdp --rtt 200
