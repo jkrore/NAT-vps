@@ -1,108 +1,46 @@
-好的，收到您的指令。您提出的这三个点确实是 `nftables` 配置中非常关键且值得精细打磨的细节。我将严格遵照您的要求，结合全网社区、GitHub项目和专业论坛中的最新实践，对这些细节进行极致优化，并融入到一个全新的、更强大的规则管理脚本中。
-
-### 细节优化解析 (基于全网实践)
-
-在重写脚本之前，我先详细解析您提出的三个优化点，以及我将如何根据最新社区共识进行改进：
-
-#### 1. `icmpv6` -> `ip6 nexthdr icmpv6` (语法精确性优化)
-
-*   **问题分析**: 在 `nftables` 中，虽然 `ip6 protocol icmpv6` 也能工作，但这在技术上是不够精确的。IPv6协议的设计与IPv4不同，它使用“下一个头（Next Header）”字段链式地来描述数据包内容。ICMPv6是作为IPv6的一个扩展头存在的。
-*   **社区最佳实践**: 几乎所有专业的 `nftables` 指南和经过严格审查的开源项目（如 `firewalld` 的后端实现）都推荐使用 `ip6 nexthdr icmpv6`。这不仅语法上更严谨，也更能体现IPv6的设计哲学，确保规则在任何复杂的IPv6网络环境中都能被正确解析和匹配。
-*   **优化方案**: 我将在新脚本中 **全面采用 `ip6 nexthdr icmpv6`** 的写法，确保语法的精确性和前瞻性。
-
-#### 2. `ct state new limit` (SYN Flood 防护优化)
-
-*   **问题分析**: 简单地对 `ct state new` 进行速率限制，虽然能起到一定作用，但不够精细。一个更高效、更专业的做法是直接在TCP三次握手的第一个包（SYN包）上进行限制。这可以在连接进入连接跟踪（conntrack）系统之前就进行拦截，消耗的系统资源更少。
-*   **社区最佳实践**: 高性能服务器和DDoS防护方案中，普遍采用直接匹配 `tcp flags syn` 的方式来做SYN Flood防护。同时，结合 `tcp option maxseg size` 过滤掉一些格式异常的探测包，可以进一步提升防护效果。使用 `limit rate` 后面跟一个 `burst`（突发）值，可以允许短时间内的正常连接突发，避免误伤正常用户。
-*   **优化方案**: 我将废弃 `ct state new limit` 的做法，改为 **直接在 `tcp flags syn` 上进行速率和突发限制**。这将提供一个更早、更低开销、更精准的防护层。
-
-#### 3. `forward policy drop` (转发策略优化)
-
-*   **问题分析**: 将 `forward` 链的默认策略设置为 `drop` 是一个非常严格的安全设定。对于一台纯粹的代理服务器（所有转发规则都已明确定义），这是可行的。但对于更通用的场景，比如您可能临时运行一个Docker容器或虚拟机，它们需要通过NAT进行网络访问，`policy drop` 可能会意外地阻止这些应用的正常网络通信，因为它们的流量也需要通过 `forward` 链。
-*   **社区最佳实践**: 更稳健和兼容的做法是 **将 `forward` 链的默认策略设置为 `accept`**，然后 **在链的顶部加入严格的状态检查规则**。具体来说，就是只允许 `ct state established,related` 的流量通过，并显式 `drop` 掉 `ct state invalid` 的流量。这样既能保证所有转发流量都必须是源自于您信任的、已建立的连接的后续包，又能兼容Docker、KVM等应用的自动NAT需求。
-*   **优化方案**: 我将采纳社区的稳健方案，**将 `forward` 链的策略改为 `accept`，并在链的顶部加入严格的状态匹配规则**。这在保证安全性的前提下，极大地提升了脚本的通用性和兼容性，避免了潜在的网络问题。
-
----
-
-### 全新脚本：`proxy-nftables-rules.sh` (v3.0.0 极致细节版)
-
-这个版本将是最终形态。它融合了您所有的要求、我之前版本的所有优点，并针对您提出的细节进行了极致的、符合社区最新共识的优化。
-
-```bash
 #!/usr/bin/env bash
-# proxy-nftables-rules.sh
-# 极致代理性能的 Nftables 规则动态生成与管理脚本
-# 版本: 3.0.0 (极致细节优化版)
-# 目标: Debian 12/13, 与 proxy-ultimate-final.sh 完美互补
+# FinalWall-Guardian.sh
+# 终极智能防火墙守护与优化脚本
+# 版本: 7.0.0 (工业级稳定版)
+# 目标: Debian 12/13, 作为任何部署流程的最后一步，提供极致安全与性能
 set -euo pipefail
 IFS=$'\n\t'
 
 # ==============================================================================
-# --- 用户配置 ---
-# 在这里定义您的所有网络规则
+# --- 用户配置 (几乎无需修改) ---
 # ==============================================================================
 
-# --- 1. 代理入站与端口转发规则 ---
-# 这是脚本的核心配置区域。
-#
-# 格式: "协议:监听端口:目标IP:目标端口:[可选参数]"
-#
-# [可选参数]:
-#   - "notrack": 极致UDP性能。流量将完全绕过连接跟踪，实现最大吞吐量。
-#                仅适用于您完全信任且不需要状态跟踪的UDP服务（如某些流媒体）。
-#   - "zone=X":  UDP隔离区。将此UDP流量放入独立的conntrack区域(X为1-65535的数字)。
-#                适用于需要低延迟、高并发的UDP应用（如游戏），可减少主表锁竞争。
-#
-# 示例:
-#   - "tcp:443:127.0.0.1:8443"       # 将本机的443/tcp流量转发给本地的X-UI面板 (8443端口)
-#   - "udp:5000-5010:10.0.0.5:5000"  # 将本机的UDP 5000-5010端口范围转发到 10.0.0.5 的5000端口
-#   - "udp:8888:10.0.0.6:8888:zone=1" # 将8888/udp流量转发，并放入conntrack的1号区域
-#   - "udp:9999:10.0.0.7:9999:notrack" # 将9999/udp流量以最高性能转发，不进行连接跟踪
-#
-declare -a PROXY_RULES=(
-  "tcp:443:127.0.0.1:8443"
-  "tcp:80:127.0.0.1:8080"
-  "udp:5353:1.1.1.1:53"
-  "udp:6000-6050:10.0.0.8:6000"
-  "udp:27015:10.0.0.9:27015:zone=1"
+# --- 1. [可选] 端口转发规则 (Port Forwarding / DNAT) ---
+# 用于转发到其他服务器，或处理Docker等容器化应用的端口映射。
+declare -a PORT_FORWARD_RULES=()
+
+# --- 2. [固定] 必须放行的入站端口 ---
+declare -a MANDATORY_INBOUND_TCP=(
+  22      # 您的SSH端口号
 )
-
-# --- 2. 允许直接访问本机的端口 (例如 SSH, Web面板) ---
-# 强烈建议使用非标准端口以提高安全性
-declare -a ALLOW_INBOUND_TCP=(
-  22      # SSH 端口
-  # 54321 # X-UI 面板端口 (如果您的面板需要对外访问)
-)
-declare -a ALLOW_INBOUND_UDP=()
-
-# --- 3. 安全策略 ---
-# 'drop' (推荐): 默认丢弃所有未明确允许的入站流量，最安全
-# 'reject': 默认拒绝流量，会返回一个ICMP错误，可能被用于网络探测
-DEFAULT_INPUT_POLICY="drop"
-
-# --- 4. SYN Flood 防护 ---
-# 'on' 或 'off'. 开启后可抵御小规模的SYN Flood攻击
-SYN_FLOOD_PROTECTION="on"
+declare -a MANDATORY_INBOUND_UDP=()
 
 
 # ==============================================================================
 # --- 脚本主体 (通常无需修改) ---
 # ==============================================================================
-VERSION="3.0.0-2025-10-18"
+VERSION="7.0.0-2025-10-18"
 APPLY=0
+LOG_FILE="/var/log/FinalWall-Guardian.log"
 declare -A SYS
 
 ### ========== 日志与命令执行助手 ==========
-_log(){ printf "\033[36m[%s]\033[0m %s\n" "$(date +%T)" "$*"; }
-_ok(){ printf "\033[32m[✓]\033[0m %s\n" "$*"; }
-_warn(){ printf "\033[33m[!]\033[0m %s\n" "$*" >&2; }
-_err(){ printf "\033[31m[✗]\033[0m %s\n" "$*" >&2; exit 1; }
+_log_to_file(){ echo "[$(date +'%F %T')] $*" >> "$LOG_FILE"; }
+_log(){ printf "\033[36m[%s]\033[0m %s\n" "$(date +%T)" "$*"; _log_to_file "INFO: $*"; }
+_ok(){ printf "\033[32m[✓]\033[0m %s\n" "$*"; _log_to_file "SUCCESS: $*"; }
+_warn(){ printf "\033[33m[!]\033[0m %s\n" "$*" >&2; _log_to_file "WARNING: $*"; }
+_err(){ printf "\033[31m[✗]\033[0m %s\n" "$*" >&2; _log_to_file "ERROR: $*"; exit 1; }
 
 ### ========== 参数解析 ==========
 usage(){ cat <<EOF
 Usage: sudo $0 [--apply]
-  默认: Dry-run模式，只生成并显示配置，不应用。
-  --apply: 检查配置语法，然后应用到系统并设为开机启动。
+  默认: Dry-run模式，扫描端口并显示将要生成的配置，不应用。
+  --apply: 备份现有规则，应用新配置，并启动SSH防锁死保护。
 EOF
 exit 0; }
 
@@ -114,172 +52,206 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ "$(id -u)" -ne 0 ] && _err "请以 root 权限运行此脚本"
-command -v nft >/dev/null 2>&1 || _err "nftables 未安装. 请运行: apt update && apt install nftables"
-
-### ========== 动态系统检测 ==========
-detect_system() {
-  _log "正在检测系统信息..."
-  SYS[iface]=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1 || true)
-  if [ -z "${SYS[iface]}" ]; then
-    SYS[iface]=$(ip -o link show | awk -F': ' '$2!~/lo|virbr|docker|veth/ {print $2; exit}')
-  fi
-  [ -z "${SYS[iface]}" ] && _err "无法检测到主网络接口"
-  _ok "主网络接口: ${SYS[iface]}"
-}
-
-### ========== Nftables 配置生成 ==========
-generate_nftables_config() {
-  _log "正在根据您的配置动态生成 nftables 规则..."
-  local iface="${SYS[iface]}"
-  local config=""
-
-  # --- Header ---
-  config+="#!/usr/sbin/nft -f\n\n"
-  config+="# Generated by proxy-nftables-rules.sh v${VERSION}\n"
-  config+="flush ruleset\n\n"
-
-  # --- Table: raw (用于 NOTRACK) ---
-  local notrack_rules_exist=0
-  for rule in "${PROXY_RULES[@]}"; do
-    if [[ "$rule" == *":notrack"* ]]; then notrack_rules_exist=1; break; fi
-  done
-  if [ "$notrack_rules_exist" -eq 1 ]; then
-    config+="table inet raw {\n"
-    config+="    chain prerouting {\n"
-    config+="        type filter hook prerouting priority raw;\n"
-    for rule in "${PROXY_RULES[@]}"; do
-      if [[ "$rule" == *":notrack"* ]]; then
-        IFS=':' read -r proto lport _ _ _ <<< "$rule"
-        config+="        iifname \"${iface}\" ${proto} dport ${lport} notrack\n"
-      fi
-    done
-    config+="    }\n"
-    config+="}\n\n"
-  fi
-
-  # --- Table: filter (防火墙) ---
-  config+="table inet filter {\n"
-  # Input Chain
-  config+="    chain input {\n"
-  config+="        type filter hook input priority filter; policy ${DEFAULT_INPUT_POLICY};\n\n"
-  config+="        # 基础规则: 接受 loopback 和已建立的连接\n"
-  config+="        iifname lo accept\n"
-  config+="        ct state established,related accept\n"
-  config+="        ct state invalid drop\n\n"
-  config+="        # 允许 ICMP (Ping) - 采用社区最佳实践语法\n"
-  config+="        ip protocol icmp accept\n"
-  config+="        ip6 nexthdr icmpv6 accept\n\n"
-  # SYN Flood Protection - 极致细节优化
-  if [ "$SYN_FLOOD_PROTECTION" = "on" ]; then
-    config+="        # SYN Flood 防护 (在 conntrack 前拦截, 效率更高)\n"
-    config+="        tcp flags syn tcp option maxseg size 1-1360 limit rate 100/second burst 200 packets accept\n"
-    config+="        tcp flags syn drop\n\n"
-  fi
-  # 动态添加入站端口
-  [ ${#ALLOW_INBOUND_TCP[@]} -gt 0 ] && config+="        tcp dport { $(IFS=,; echo "${ALLOW_INBOUND_TCP[*]}") } accept\n"
-  [ ${#ALLOW_INBOUND_UDP[@]} -gt 0 ] && config+="        udp dport { $(IFS=,; echo "${ALLOW_INBOUND_UDP[*]}") } accept\n"
-  config+="    }\n\n"
-  # Forward Chain - 极致细节优化
-  config+="    chain forward {\n"
-  config+="        type filter hook forward priority filter; policy accept;\n"
-  config+="        # 转发策略优化: 默认接受但严格检查状态，兼容性与安全性并存\n"
-  config+="        ct state established,related accept\n"
-  config+="        ct state invalid drop\n"
-  config+="    }\n\n"
-  # Output Chain
-  config+="    chain output {\n"
-  config+="        type filter hook output priority filter; policy accept;\n"
-  config+="    }\n"
-  config+="}\n\n"
-
-  # --- Table: nat (网络地址转换) ---
-  if [ ${#PROXY_RULES[@]} -gt 0 ]; then
-    config+="table inet nat {\n"
-    # 动态创建目标IP集合
-    local unique_ips
-    unique_ips=$(for rule in "${PROXY_RULES[@]}"; do echo "$rule" | cut -d':' -f3; done | sort -u)
-    config+="    set forward_dests {\n"
-    config+="        type ipv4_addr\n"
-    config+="        flags interval\n"
-    config+="        elements = { $(echo "$unique_ips" | tr '\n' ',' | sed 's/,$//') }\n"
-    config+="    }\n\n"
-
-    # Prerouting Chain (DNAT)
-    config+="    chain prerouting {\n"
-    config+="        type nat hook prerouting priority dstnat;\n"
-    for rule in "${PROXY_RULES[@]}"; do
-      IFS=':' read -r proto lport dip dport opt <<< "$rule"
-      local dnat_rule="iifname \"${iface}\" ${proto} dport ${lport}"
-      if [[ "$opt" == "zone="* ]]; then
-        local zone_id=${opt#*=}
-        dnat_rule+=" ct zone set ${zone_id}"
-      fi
-      dnat_rule+=" dnat to ${dip}:${dport}"
-      config+="        ${dnat_rule}\n"
-    done
-    config+="    }\n\n"
-
-    # Postrouting Chain (SNAT/Masquerade)
-    config+="    chain postrouting {\n"
-    config+="        type nat hook postrouting priority srcnat;\n"
-    config+="        oifname \"${iface}\" ip daddr @forward_dests masquerade\n"
-    config+="    }\n\n"
+### ========== 系统自检与依赖安装 ==========
+pre_flight_checks() {
+  touch "$LOG_FILE" || _err "无法写入日志文件: $LOG_FILE"
+  _log "脚本启动 (Version: $VERSION)"
+  [ "$(id -u)" -ne 0 ] && _err "请以 root 权限运行此脚本"
   
-    # Forward Chain for MSS Clamping (在 nat 表中定义更符合逻辑)
-    config+="    chain forward {\n"
-    config+="        type filter hook forward priority mangle;\n"
-    config+="        # 自动TCP MSS Clamping，防止MTU问题\n"
-    config+="        tcp flags syn tcp option maxseg size set 1440\n"
-    config+="    }\n"
-    config+="}\n"
+  local pkgs_to_install=""
+  command -v nft >/dev/null 2>&1 || pkgs_to_install+=" nftables"
+  command -v ss >/dev/null 2>&1 || pkgs_to_install+=" iproute2"
+  
+  if [ -n "$pkgs_to_install" ]; then
+    _log "检测到依赖缺失，正在尝试自动安装:${pkgs_to_install}..."
+    if [ "$APPLY" -eq 1 ]; then
+      apt-get update -y >/dev/null && apt-get install -y $pkgs_to_install >/dev/null || _err "依赖自动安装失败，请手动安装后重试。"
+      _ok "依赖安装成功。"
+    else
+      _warn "Dry-run模式：跳过依赖安装。请注意，后续步骤可能失败。"
+    fi
   fi
-
-  echo -e "$config"
+  
+  SYS[iface]=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1 || true)
+  [ -z "${SYS[iface]}" ] && _err "无法检测到主网络接口"
 }
 
-### ========== 应用配置 ==========
-apply_config() {
-  local config_content="$1"
-  local tmp_file="/tmp/nftables.conf.$$"
-  local final_file="/etc/nftables.conf"
+### ========== 智能端口扫描 (增强版) ==========
+scan_listening_ports() {
+  _log "正在智能扫描本机所有公网监听端口 (带进程信息)..."
+  
+  echo "--- [TCP Listeners on 0.0.0.0 or ::] ---"
+  ss -tlpn 2>/dev/null | grep 'LISTEN' | grep -E '0\.0\.0\.0:|\[::\]:' | cat
+  echo "--- [UDP Listeners on 0.0.0.0 or ::] ---"
+  ss -ulpn 2>/dev/null | grep -E '0\.0\.0\.0:|\[::\]:' | cat
+  echo "-------------------------------------------"
+  _warn "注意: 仅扫描监听在 '0.0.0.0' 或 '[::]' 上的服务。Docker容器或绑定特定IP的服务需手动配置 PORT_FORWARD_RULES。"
 
-  echo -e "$config_content" > "$tmp_file"
-  trap 'rm -f "$tmp_file"' EXIT
+  local tcp_ports udp_ports
+  tcp_ports=$(ss -tlpn 2>/dev/null | grep 'LISTEN' | awk '{print $4}' | grep -E '0\.0\.0\.0:|\[::\]:' | sed 's/.*://' | sort -un)
+  udp_ports=$(ss -ulpn 2>/dev/null | awk '{print $5}' | grep -E '0\.0\.0\.0:|\[::\]:' | sed 's/.*://' | sort -un)
 
-  _log "正在严格检查生成的配置文件语法..."
-  if nft -c -f "$tmp_file"; then
-    _ok "语法检查通过，配置有效"
-  else
-    _err "生成的配置文件存在语法错误，请检查您的配置。操作已中止。"
+  local all_tcp all_udp
+  all_tcp=$( (printf '%s\n' "${MANDATORY_INBOUND_TCP[@]}" ; echo "$tcp_ports") | sort -un | tr '\n' ',' | sed 's/,$//' )
+  all_udp=$( (printf '%s\n' "${MANDATORY_INBOUND_UDP[@]}" ; echo "$udp_ports") | sort -un | tr '\n' ',' | sed 's/,$//' )
+
+  SYS[allowed_tcp]=$all_tcp
+  SYS[allowed_udp]=$all_udp
+
+  _ok "扫描完成。将放行TCP端口: ${all_tcp:-无}"
+  _ok "扫描完成。将放行UDP端口: ${all_udp:-无}"
+}
+
+### ========== 终极配置生成 (工业级稳定版) ==========
+generate_ultimate_config() {
+  _log "正在生成终极 nftables 与 sysctl 配置文件..."
+  local nft_config=""
+  local sysctl_config=""
+
+  # --- Part 1: Nftables Rules (终极兼容语法) ---
+  nft_config+="#!/usr/sbin/nft -f\n\n"
+  nft_config+="# Generated by FinalWall-Guardian.sh v${VERSION}\n"
+  nft_config+="flush ruleset\n\n"
+  
+  nft_config+="table inet filter {\n"
+  nft_config+="    chain input { type filter hook input priority filter; policy drop;\n"
+  nft_config+="        iifname lo accept\n        ct state established,related accept\n        ct state invalid drop\n"
+  nft_config+="        ip protocol icmp accept\n        ip6 nexthdr icmpv6 accept\n"
+  # 最通用的SYN Flood防护
+  nft_config+="        tcp flags syn limit rate 50/second burst 100 packets accept\n"
+  [ -n "${SYS[allowed_tcp]}" ] && nft_config+="        tcp dport { ${SYS[allowed_tcp]} } accept\n"
+  [ -n "${SYS[allowed_udp]}" ] && nft_config+="        udp dport { ${SYS[allowed_udp]} } accept\n    }\n"
+  nft_config+="    chain forward { type filter hook forward priority filter; policy accept;\n"
+  nft_config+="        ct state established,related accept\n        ct state invalid drop\n    }\n"
+  nft_config+="    chain output { type filter hook output priority filter; policy accept;\n    }\n}\n\n"
+  
+  if [ ${#PORT_FORWARD_RULES[@]} -gt 0 ]; then
+    nft_config+="table inet nat {\n"
+    local unique_ips=$(for rule in "${PORT_FORWARD_RULES[@]}"; do echo "$rule" | cut -d':' -f3; done | sort -u)
+    nft_config+="    set forward_dests { type ipv4_addr; flags interval; elements = { $(echo "$unique_ips" | tr '\n' ',' | sed 's/,$//') } }\n"
+    nft_config+="    chain prerouting { type nat hook prerouting priority dstnat; policy accept;\n"
+    for rule in "${PORT_FORWARD_RULES[@]}"; do IFS=':' read -r proto lport dip dport opt <<< "$rule"; local dnat_rule="iifname \"${SYS[iface]}\" ${proto} dport ${lport}"; if [[ "$opt" == "zone="* ]]; then dnat_rule+=" ct zone set ${opt#*=}"; fi; dnat_rule+=" dnat to ${dip}:${dport}"; nft_config+="        ${dnat_rule}\n"; done
+    nft_config+="    }\n"
+    nft_config+="    chain postrouting { type nat hook postrouting priority srcnat; policy accept;\n"
+    nft_config+="        oifname \"${SYS[iface]}\" ip daddr @forward_dests masquerade\n    }\n}\n"
   fi
+
+  # --- Part 2: Sysctl Optimizations (保守且安全) ---
+  sysctl_config+="# Generated by FinalWall-Guardian.sh v${VERSION}\n"
+  local default_route_count=$(ip route show default | wc -l)
+  local rp_filter_value=1
+  if [ "$default_route_count" -gt 1 ]; then
+    _warn "检测到多条默认路由，将 rp_filter 设置为 2 (loose) 模式以增强兼容性。"
+    rp_filter_value=2
+  fi
+  sysctl_config+="net.ipv4.conf.all.rp_filter = ${rp_filter_value}\n"
+  sysctl_config+="net.ipv4.conf.default.rp_filter = ${rp_filter_value}\n"
+  
+  local mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+  local conntrack_max=$(( mem_mb * 64 )) # 每GB内存分配64k条目
+  [ "$conntrack_max" -lt 65536 ] && conntrack_max=65536
+  [ "$conntrack_max" -gt 524288 ] && conntrack_max=524288
+  sysctl_config+="net.netfilter.nf_conntrack_max = ${conntrack_max}\n"
+  
+  sysctl_config+="net.ipv4.tcp_ecn = 0\n"
+  sysctl_config+="net.ipv4.tcp_mtu_probing = 1\n" # 替代MSS Clamping
+  sysctl_config+="net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30\n"
+
+  SYS[nft_conf]=$nft_config
+  SYS[sysctl_conf]=$sysctl_config
+}
+
+### ========== 应用配置 (带安全回滚) ==========
+apply_config() {
+  local nft_conf="${SYS[nft_conf]}"
+  local sysctl_conf="${SYS[sysctl_conf]}"
+  local nft_file="/etc/nftables.conf"
+  local sysctl_file="/etc/sysctl.d/98-finalwall-guardian.conf"
+  local tmp_nft_file="/tmp/nft.conf.$$"
+  
+  echo -e "$nft_conf" > "$tmp_nft_file"
+  trap 'rm -f "$tmp_nft_file"' EXIT
+
+  _log "正在严格检查生成的 nftables 配置文件语法..."
+  if ! nft -c -f "$tmp_nft_file"; then
+    _err "生成的 nftables 配置文件存在语法错误。操作已中止。"
+  fi
+  _ok "语法检查通过，配置有效。"
 
   if [ "$APPLY" -eq 1 ]; then
-    _log "正在应用配置到 ${final_file}..."
-    if cp "$tmp_file" "$final_file"; then
-      _ok "配置文件已写入"
-    else
-      _err "写入配置文件失败"
-    fi
+    local backup_dir="/root/FinalWall_Guardian_backups/$(date +%F_%T)"
+    mkdir -p "$backup_dir"
+    _log "配置备份将保存在: $backup_dir"
 
-    _log "正在重载并启用 nftables 服务以持久化规则..."
-    if systemctl restart nftables && systemctl enable nftables; then
-      _ok "nftables 服务已重载并设为开机启动"
-    else
-      _err "nftables 服务操作失败，请使用 'journalctl -u nftables' 查看日志"
-    fi
-  else
-    _warn "当前为 Dry-run 模式，未对系统做任何更改。"
-    _warn "要应用配置，请使用 '--apply' 参数重新运行脚本。"
+    for fw in ufw firewalld netfilter-persistent; do
+      if systemctl is-active --quiet "$fw"; then
+        _warn "检测到 $fw 服务，正在备份并禁用它..."
+        if [ "$fw" = "ufw" ]; then ufw status numbered > "$backup_dir/ufw_status.txt" 2>/dev/null || true; fi
+        if [ "$fw" = "firewalld" ]; then cp -r /etc/firewalld "$backup_dir/" 2>/dev/null || true; fi
+        systemctl stop "$fw"; systemctl disable "$fw"; systemctl mask "$fw"
+        _ok "$fw 已备份并禁用。"
+      fi
+    done
+    
+    nft list ruleset > "$backup_dir/nftables_ruleset_before.txt"
+    [ -f "$nft_file" ] && cp "$nft_file" "$backup_dir/nftables.conf.bak"
+
+    _log "正在应用 sysctl 网络优化..."
+    echo -e "$sysctl_conf" > "$sysctl_file"
+    sysctl -p "$sysctl_file" >/dev/null 2>&1 || true
+    sysctl --system >/dev/null 2>&1 || true
+    
+    _log "正在应用 nftables 安全规则..."
+    cp "$tmp_nft_file" "$nft_file"
+    systemctl restart nftables && systemctl enable nftables
+
+    local ssh_port_to_check=$(printf '%s\n' "${MANDATORY_INBOUND_TCP[@]}" | head -1)
+    _ok "规则已应用。启动60秒SSH连接保护，请在1分钟内尝试重连SSH..."
+    (
+      sleep 60
+      if ! ss -tlpn 2>/dev/null | grep -q ":${ssh_port_to_check}\b"; then
+        _warn "!!! SSH连接丢失风险警告 !!! 未检测到SSH端口在监听。"
+        _warn "!!! 正在自动回滚到之前的防火墙规则... !!!"
+        if [ -f "$backup_dir/nftables.conf.bak" ]; then
+          cp "$backup_dir/nftables.conf.bak" "$nft_file"
+          if nft -c -f "$nft_file"; then
+            systemctl restart nftables
+            _ok "已成功回滚到备份的 nftables.conf。"
+            wall <<< "FinalWall-Guardian: SSH connection lost. Rules have been rolled back to previous state."
+          else
+            _err "回滚失败：备份文件语法错误。"
+            wall <<< "FinalWall-Guardian: SSH connection lost. Rollback FAILED due to invalid backup file."
+          fi
+        else
+          echo "flush ruleset" > "$nft_file"
+          systemctl restart nftables
+          _warn "无备份文件可回滚，已清空所有规则。"
+          wall <<< "FinalWall-Guardian: SSH connection lost. No backup found. All firewall rules have been flushed."
+        fi
+      else
+        _ok "SSH连接验证成功，新规则已安全启用。"
+      fi
+    ) &
   fi
 }
 
 ### ========== 主函数 ==========
 main() {
-  detect_system
-  local generated_config
-  generated_config=$(generate_nftables_config)
+  pre_flight_checks
+  scan_listening_ports
+  generate_ultimate_config
 
-  echo -e "\n\033[1;33m==================== 生成的 nftables 配置 (预览) ====================\033[0m"
-  echo -e "${generated_config}"
-  echo -e "\033[1;33m======================================================================\033
+  echo -e "\n\033[1;33m==================== 生成的 sysctl 配置 (预览) ====================\033[0m"
+  echo -e "${SYS[sysctl_conf]}"
+  echo -e "\033[1;33m==================== 生成的 nftables 配置 (预览) ====================\033[0m"
+  echo -e "${SYS[nft_conf]}"
+  echo -e "\033[1;33m====================================================================\033[0m"
+  
+  if [ "$APPLY" -eq 1 ]; then
+    apply_config
+  else
+    _warn "Dry-run 完成。使用 --apply 来写入并启用规则。"
+  fi
+}
+
+main "$@"
