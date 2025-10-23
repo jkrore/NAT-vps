@@ -30,9 +30,7 @@ curl -sL https://raw.githubusercontent.com/jkrore/NAT-vps/main/vip2.sh | bash -s
 ```
 
 ```bash
-curl -sLo FinalWall-Guardian.sh https://raw.githubusercontent.com/jkrore/NAT-vps/main/vip3.sh
-chmod +x 3.sh
-./3.sh --apply
+curl -sL https://raw.githubusercontent.com/jkrore/NAT-vps/main/vip3.sh | bash -s -- --apply 
 ```
 
 > **提示**：脚本执行完毕后，如果成功安装了 XanMod 内核，会提示您需要重启。请手动执行 `reboot` 命令重启服务器，以加载新内核。
