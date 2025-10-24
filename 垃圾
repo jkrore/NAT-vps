@@ -1,0 +1,10 @@
+#火狐浏览器
+
+docker run -d \
+  --name=firefox-pro \
+  -p 15800:5800 \
+  -v /root/firefox_config:/config:rw \
+  --shm-size 2g \
+  -e VNC_PASSWORD='YourStrongPasswordHere' \
+  --restart=unless-stopped \
+  jlesage/firefox
