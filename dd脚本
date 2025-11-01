@@ -1,5 +1,6 @@
 #搭建 hostnamectl set-hostname 名字  🦄🍕 🚀🌍
 vmpt="54321" vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="🐲™️【请勿测速】"  argo="y"  bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
+bash <(curl -l -s https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/refs/heads/main/install.sh)
 #dd脚本
 #更新 apt update && apt install curl -y
 vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="gode" bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
