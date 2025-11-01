@@ -2,7 +2,7 @@
 #更新 apt update && apt install curl -y
 vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="gode" bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
 vmpt="54321" vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="gode" cdnym="sp1.godeluoo.eu.org" argo="y" agn="sp2.godeluoo.eu.org" agk="eyJhIjoiZTc3ODQ0NmNjMTlkZGIwNWM1ZDMyODFmMzMzMDhhZWEiLCJ0IjoiYzI3ZjAyMTgtNzEwYS00OTZmLWIzZDItMzI3ZGMzNGViYTRmIiwicyI6Ik9UZGlNbVl4TjJFdE5tSTBNUzAwT0RZeExUZzVOR0V0TVRjMFpEUmlOemRpWlRJeiJ9" bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
-vmpt="54321" vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="111"  argo="y"  bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
+vmpt="54321" vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="🐲™️【请勿测速】"  argo="y"  bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
 #dd脚本
 curl -O https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh || wget -O ${_##*/} $_
 bash reinstall.sh debian 13 --ssh-port 22 --web-port 8080 --password "Huawei@123..."
