@@ -1,0 +1,1317 @@
+#!/usr/bin/env bash
+# ============================================================================
+# Debian 12/13 终极网络优化脚本 - BBRv3 极限性能版
+# ============================================================================
+# 版本: 3.0-extreme-final
+# 作者: 整合自多个社区优化方案
+# 说明: 本脚本默认采用极限性能模式，所有参数已调优至最激进配置
+# 适用: Debian 12/13 (x86_64) 纯净系统
+# ============================================================================
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# ============================================================================
+# 全局配置
+# ============================================================================
+VERSION="3.0-extreme-2025"
+TMP="/tmp/bbr-optimizer-$$"
+mkdir -p "$TMP"
+trap 'rm -rf "$TMP"' EXIT
+
+# 配置文件路径
+SYSCTL_CONF="/etc/sysctl.d/99-bbr-extreme.conf"
+LIMITS_CONF="/etc/security/limits.d/99-bbr-extreme.conf"
+
+# 系统信息全局变量
+declare -A SYS NET NIC
+
+# ============================================================================
+# 颜色输出函数
+# ============================================================================
+_log()  { printf "\033[36m[%s]\033[0m %s\n" "$(date +%T)" "$*"; }
+_ok()   { printf "\033[32m[✓]\033[0m %s\n" "$*"; }
+_warn() { printf "\033[33m[!]\033[0m %s\n" "$*" >&2; }
+_err()  { printf "\033[31m[✗]\033[0m %s\n" "$*" >&2; exit 1; }
+_title(){ printf "\n\033[1;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n"; }
+_section(){ printf "\n\033[1;35m╔══ %s ══╗\033[0m\n" "$*"; }
+
+has() { command -v "$1" >/dev/null 2>&1; }
+to_int() { local v="${1:-0}"; v="${v//[^0-9]/}"; echo "${v:-0}"; }
+
+# ============================================================================
+# 系统检查
+# ============================================================================
+check_system() {
+    _section "系统环境检查"
+    
+    # 必须root权限
+    [ "$(id -u)" -ne 0 ] && _err "❌ 此脚本需要root权限，请使用: sudo $0"
+    
+    # 检查系统版本
+    if [ ! -f /etc/os-release ]; then
+        _err "❌ 无法识别系统版本"
+    fi
+    
+    . /etc/os-release
+    
+    if [[ "$ID" != "debian" && "$ID" != "ubuntu" ]]; then
+        _err "❌ 此脚本仅支持Debian/Ubuntu系统，当前: $ID"
+    fi
+    
+    _ok "✓ 操作系统: $PRETTY_NAME"
+    
+    # 检查架构 (仅支持x86_64)
+    local arch=$(uname -m)
+    if [[ "$arch" != "x86_64" ]]; then
+        _err "❌ 此版本仅支持x86_64架构，当前: $arch"
+    fi
+    
+    _ok "✓ 系统架构: x86_64"
+}
+
+# ============================================================================
+# 依赖安装
+# ============================================================================
+install_dependencies() {
+    _section "安装必要依赖"
+    
+    local deps=("curl" "wget" "jq" "ethtool" "bc" "gnupg" "lsb-release" "ca-certificates" "cpufrequtils")
+    local missing=()
+    
+    for dep in "${deps[@]}"; do
+        if ! has "$dep"; then
+            missing+=("$dep")
+        fi
+    done
+    
+    if [ ${#missing[@]} -gt 0 ]; then
+        _log "📦 安装缺失依赖: ${missing[*]}"
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq || _err "❌ apt-get update 失败"
+        apt-get install -y -qq "${missing[@]}" 2>&1 | grep -v "正在" || true
+        _ok "✓ 依赖安装完成"
+    else
+        _ok "✓ 所有依赖已就绪"
+    fi
+}
+
+# ============================================================================
+# 系统信息检测
+# ============================================================================
+detect_system_info() {
+    _section "系统硬件信息检测"
+    
+    # 基础信息
+    SYS[kernel]=$(uname -r)
+    SYS[cpu]=$(nproc)
+    SYS[mem_kb]=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+    SYS[mem_bytes]=$((SYS[mem_kb] * 1024))
+    SYS[mem_gb]=$(awk -v b="${SYS[mem_bytes]}" 'BEGIN{printf "%.1f", b/1024/1024/1024}')
+    
+    # 虚拟化类型
+    if has systemd-detect-virt; then
+        SYS[virt]=$(systemd-detect-virt 2>/dev/null || echo "unknown")
+    else
+        SYS[virt]="unknown"
+    fi
+    
+    # 检测主网卡
+    SYS[iface]=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
+    if [ -z "${SYS[iface]}" ]; then
+        SYS[iface]=$(ip -o link show | awk -F': ' '$2!~/^(lo|virbr|docker|veth)/ {print $2; exit}')
+    fi
+    [ -z "${SYS[iface]}" ] && _err "❌ 无法检测主网络接口"
+    
+    local iface="${SYS[iface]}"
+    
+    # 网卡详细信息
+    NIC[driver]=$(ethtool -i "$iface" 2>/dev/null | awk '/^driver:/ {print $2}' || echo "unknown")
+    NIC[speed]=$(ethtool "$iface" 2>/dev/null | awk '/Speed:/ {print $2}' | tr -cd '0-9' || echo "0")
+    NIC[queues]=$(ethtool -l "$iface" 2>/dev/null | awk '/Combined:/ {print $2; exit}' || echo "1")
+    NIC[rx_max]=$(ethtool -g "$iface" 2>/dev/null | awk '/^RX:/{getline; print $1; exit}' || echo "0")
+    NIC[tx_max]=$(ethtool -g "$iface" 2>/dev/null | awk '/^TX:/{getline; print $1; exit}' || echo "0")
+    
+    _ok "✓ 内核版本: ${SYS[kernel]}"
+    _ok "✓ CPU核心数: ${SYS[cpu]} 核"
+    _ok "✓ 系统内存: ${SYS[mem_gb]} GB"
+    _ok "✓ 虚拟化类型: ${SYS[virt]}"
+    _ok "✓ 主网卡: $iface"
+    _ok "✓ 网卡驱动: ${NIC[driver]}"
+    [ "${NIC[speed]}" != "0" ] && _ok "✓ 网卡速率: ${NIC[speed]} Mbps"
+}
+
+# ============================================================================
+# RTT (往返延迟) 智能检测
+# ============================================================================
+detect_rtt() {
+    _section "网络延迟(RTT)智能检测"
+    
+    # 使用加权平均法测试多个公共DNS，更准确
+    declare -A targets=(
+        ["1.1.1.1"]=5      # Cloudflare (权重最高)
+        ["8.8.8.8"]=4      # Google
+        ["223.5.5.5"]=3    # 阿里DNS
+        ["114.114.114.114"]=2  # 国内DNS
+    )
+    
+    local total_weighted=0 total_weight=0 success=0
+    
+    for target in "${!targets[@]}"; do
+        local weight=${targets[$target]}
+        local tmpfile="${TMP}/ping_${target//./}"
+        
+        if ping -c 6 -W 2 -i 0.2 "$target" > "$tmpfile" 2>&1; then
+            # 提取所有延迟值
+            mapfile -t rtts < <(grep -oP 'time=\K[0-9.]+' "$tmpfile")
+            
+            if [ ${#rtts[@]} -ge 4 ]; then
+                # 排序并取中位数(更稳定)
+                IFS=$'\n' sorted=($(printf '%s\n' "${rtts[@]}" | sort -n))
+                local median="${sorted[$(( ${#sorted[@]} / 2 ))]}"
+                
+                # 验证合理性 (1-1000ms)
+                if awk -v m="$median" 'BEGIN{exit !(m>=1 && m<=1000)}'; then
+                    total_weighted=$(awk -v tw="$total_weighted" -v m="$median" -v w="$weight" \
+                        'BEGIN{printf "%.2f", tw + m*w}')
+                    total_weight=$((total_weight + weight))
+                    success=$((success + 1))
+                    _log "  └─ $target: ${median}ms (权重=$weight)"
+                fi
+            fi
+            rm -f "$tmpfile"
+        fi
+    done
+    
+    if [ "$success" -ge 2 ]; then
+        # 加权平均RTT
+        NET[rtt]=$(awk -v tw="$total_weighted" -v w="$total_weight" \
+            'BEGIN{printf "%.0f", tw/w}')
+        _ok "✓ 智能RTT检测: ${NET[rtt]} ms (基于${success}个测试点)"
+    else
+        # 默认保守值
+        NET[rtt]=30
+        _warn "⚠ RTT检测失败，使用默认: ${NET[rtt]} ms"
+    fi
+}
+
+# ============================================================================
+# 带宽智能检测
+# ============================================================================
+detect_bandwidth() {
+    _section "出口带宽智能检测"
+    
+    local iface="${SYS[iface]}"
+    local bw=0
+    
+    # 方法1: 从网卡速率获取
+    if [ "${NIC[speed]}" != "0" ] && [ "${NIC[speed]}" -gt 0 ]; then
+        bw="${NIC[speed]}"
+        _log "  └─ 网卡标称速率: ${bw} Mbps"
+    fi
+    
+    # 方法2: 基于CPU和内存估算 (云服务器通用方法)
+    if [ "$bw" -eq 0 ] || [ "$bw" -gt 10000 ]; then
+        local cpu_est=$(( SYS[cpu] * 600 ))  # 极限模式: 每核心600Mbps估算
+        local mem_est=$(awk -v m="${SYS[mem_gb]}" 'BEGIN{printf "%.0f", m * 500}')
+        
+        # 取较小值作为估算
+        bw=$(( cpu_est < mem_est ? cpu_est : mem_est ))
+        
+        # 对于云服务器，应用80%保守系数
+        if [[ "${SYS[virt]}" =~ (kvm|xen|vmware) ]]; then
+            bw=$(( bw * 80 / 100 ))
+        fi
+        
+        _log "  └─ 智能估算带宽: ${bw} Mbps (基于${SYS[cpu]}核CPU, ${SYS[mem_gb]}GB内存)"
+    fi
+    
+    # 最小值保护
+    [ "$bw" -lt 100 ] && bw=100
+    
+    # 对于超高速网络，限制最大估算值
+    [ "$bw" -gt 10000 ] && bw=10000
+    
+    NET[bw]=$bw
+    _ok "✓ 出口带宽设定: ${NET[bw]} Mbps"
+}
+
+# ============================================================================
+# BDP计算与极限缓冲区配置 (核心优化)
+# ============================================================================
+calculate_extreme_buffers() {
+    _section "BDP计算与极限缓冲区配置"
+    
+    local bw=${NET[bw]}
+    local rtt=${NET[rtt]}
+    
+    # 计算BDP (Bandwidth-Delay Product)
+    # 公式: BDP = 带宽(Mbps) × RTT(ms) / 8
+    # 这里使用更精确的计算: BDP = (bw * 1000000 / 8) * (rtt / 1000)
+    local bdp=$(awk -v bw="$bw" -v rtt="$rtt" 'BEGIN{printf "%.0f", bw * 125 * rtt}')
+    
+    NET[bdp]=$bdp
+    NET[bdp_mb]=$(awk -v b="$bdp" 'BEGIN{printf "%.2f", b/1024/1024}')
+    
+    _log "  └─ BDP = ${NET[bdp]} bytes (${NET[bdp_mb]} MB)"
+    
+    # 内存安全边界
+    local mem_15pct=$(( SYS[mem_bytes] * 15 / 100 ))  # 15%内存上限
+    local mem_20pct=$(( SYS[mem_bytes] * 20 / 100 ))  # 20%内存上限(极限)
+    
+    # ========================================
+    # 极限模式 TCP 缓冲区配置
+    # ========================================
+    # 使用 5倍BDP 作为最大缓冲(极限模式，一般为3-4倍)
+    local tcp_max=$(( bdp * 5 ))
+    
+    # 安全上限: 不超过内存的20%
+    [ "$tcp_max" -gt "$mem_20pct" ] && tcp_max="$mem_20pct"
+    
+    # 最小保障: 至少16MB
+    [ "$tcp_max" -lt 16777216 ] && tcp_max=16777216
+    
+    NET[tcp_rmem_max]=$tcp_max
+    NET[tcp_wmem_max]=$tcp_max
+    
+    # 默认缓冲: 设置为较大值以应对突发流量
+    NET[tcp_rmem_def]=$(( bdp > 262144 ? bdp : 262144 ))  # 至少256KB
+    NET[tcp_wmem_def]="${NET[tcp_rmem_def]}"
+    
+    # 最小缓冲: 保持4KB (系统默认页大小)
+    NET[tcp_rmem_min]=4096
+    NET[tcp_wmem_min]=4096
+    
+    _ok "✓ TCP读缓冲: 最小=4KB, 默认=$((NET[tcp_rmem_def]/1024))KB, 最大=$((tcp_max/1024/1024))MB"
+    _ok "✓ TCP写缓冲: 最小=4KB, 默认=$((NET[tcp_wmem_def]/1024))KB, 最大=$((tcp_max/1024/1024))MB"
+    
+    # ========================================
+    # 极限模式 UDP 缓冲区配置
+    # ========================================
+    local udp_max=$(( bdp * 3 ))  # UDP使用3倍BDP
+    
+    # 安全上限: 不超过内存的15%
+    [ "$udp_max" -gt "$mem_15pct" ] && udp_max="$mem_15pct"
+    
+    # 最小保障: 至少8MB
+    [ "$udp_max" -lt 8388608 ] && udp_max=8388608
+    
+    NET[udp_rmem_min]=16384   # 16KB最小
+    NET[udp_wmem_min]=16384
+    
+    # UDP内存页配置 (以4KB页为单位)
+    local page=4096
+    NET[udp_mem_min]=$(( udp_max / page / 4 ))     # 压力下限: 25%
+    NET[udp_mem_pressure]=$(( udp_max / page / 2 )) # 压力阈值: 50%
+    NET[udp_mem_max]=$(( udp_max / page ))          # 最大值: 100%
+    
+    _ok "✓ UDP缓冲: 最大=$((udp_max/1024/1024))MB, 页数=${NET[udp_mem_min]}/${NET[udp_mem_pressure]}/${NET[udp_mem_max]}"
+    
+    # ========================================
+    # 极限模式 网络队列配置
+    # ========================================
+    # backlog: 基于带宽的连接队列深度
+    local backlog=$(( bw * 120 ))  # 极限: 带宽 × 120
+    [ "$backlog" -lt 32768 ] && backlog=32768
+    [ "$backlog" -gt 2000000 ] && backlog=2000000
+    NET[backlog]=$backlog
+    
+    # budget: 每次NAPI poll处理的数据包数
+    NET[budget]=$(( backlog / 8 ))
+    [ "${NET[budget]}" -gt 65536 ] && NET[budget]=65536
+    
+    _ok "✓ 网络队列: backlog=${NET[backlog]}, budget=${NET[budget]}"
+    
+    # ========================================
+    # 极限模式 连接跟踪表 (Conntrack)
+    # ========================================
+    # 基于内存大小计算，极限模式使用更激进的配置
+    local ct=$(( SYS[mem_bytes] / 16384 ))  # 极限: 每16KB内存一个连接
+    
+    [ "$ct" -lt 131072 ] && ct=131072      # 最小13万
+    [ "$ct" -gt 1048576 ] && ct=1048576    # 最大104万
+    
+    NET[conntrack]=$ct
+    
+    _ok "✓ 连接跟踪: ${NET[conntrack]} 条"
+}
+
+# ============================================================================
+# 生成极限模式 Sysctl 配置文件
+# ============================================================================
+generate_sysctl_config() {
+    _section "生成Sysctl极限优化配置"
+    
+    # 极限模式: 超大连接队列
+    local somaxconn=524288   # 52万连接队列 (极限值)
+    local syn_backlog=524288 # 52万SYN队列
+    
+    cat > "$SYSCTL_CONF" <<EOF
+# ============================================================================
+# Debian 终极网络优化配置 - BBRv3 极限性能模式
+# ============================================================================
+# 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
+# 系统配置: ${SYS[cpu]}核CPU, ${SYS[mem_gb]}GB内存, ${NET[bw]}Mbps带宽
+# BDP参数: ${NET[bdp]} bytes (${NET[bdp_mb]} MB)
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# BBRv3 拥塞控制 (核心)
+# ----------------------------------------------------------------------------
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# ----------------------------------------------------------------------------
+# 核心网络缓冲区 (极限配置)
+# ----------------------------------------------------------------------------
+# 默认接收/发送缓冲区: 256KB起步
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+
+# 最大接收/发送缓冲区: 基于5倍BDP计算
+net.core.rmem_max = ${NET[tcp_rmem_max]}
+net.core.wmem_max = ${NET[tcp_wmem_max]}
+
+# 选项内存: 用于TCP选项(如timestamps)
+net.core.optmem_max = 524288
+
+# ----------------------------------------------------------------------------
+# TCP 缓冲区自动调优 (极限配置)
+# ----------------------------------------------------------------------------
+# 格式: 最小值 默认值 最大值
+net.ipv4.tcp_rmem = ${NET[tcp_rmem_min]} ${NET[tcp_rmem_def]} ${NET[tcp_rmem_max]}
+net.ipv4.tcp_wmem = ${NET[tcp_wmem_min]} ${NET[tcp_wmem_def]} ${NET[tcp_wmem_max]}
+
+# 启用TCP缓冲区自动调优(必须)
+net.ipv4.tcp_moderate_rcvbuf = 1
+
+# TCP内存页配置 (自动调优边界)
+net.ipv4.tcp_mem = $(( NET[tcp_rmem_max] / 4096 / 4 )) $(( NET[tcp_rmem_max] / 4096 / 2 )) $(( NET[tcp_rmem_max] / 4096 ))
+
+# ----------------------------------------------------------------------------
+# TCP 连接队列 (极限配置)
+# ----------------------------------------------------------------------------
+# 已完成连接队列: 52万 (极限值，默认4096)
+net.core.somaxconn = ${somaxconn}
+
+# SYN队列: 52万 (极限值，默认1024)
+net.ipv4.tcp_max_syn_backlog = ${syn_backlog}
+
+# 网络设备接收队列: 基于带宽动态计算
+net.core.netdev_max_backlog = ${NET[backlog]}
+
+# NAPI预算: 每次轮询处理的包数
+net.core.netdev_budget = ${NET[budget]}
+net.core.netdev_budget_usecs = 8000
+
+# ----------------------------------------------------------------------------
+# TCP 性能优化 (极限配置)
+# ----------------------------------------------------------------------------
+# TCP Fast Open: 启用客户端和服务端 (值为3)
+net.ipv4.tcp_fastopen = 3
+
+# TIME_WAIT重用: 启用
+net.ipv4.tcp_tw_reuse = 1
+
+# FIN超时: 缩短至10秒 (默认60秒)
+net.ipv4.tcp_fin_timeout = 10
+
+# 关闭慢启动重启: 提升长连接性能
+net.ipv4.tcp_slow_start_after_idle = 0
+
+# MTU探测: 启用(避免黑洞)
+net.ipv4.tcp_mtu_probing = 1
+
+# 保活时间: 减少至10分钟 (默认2小时)
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_probes = 3
+net.ipv4.tcp_keepalive_intvl = 15
+
+# TCP时间戳: 启用(PAWS保护)
+net.ipv4.tcp_timestamps = 1
+
+# TCP窗口缩放: 启用(必须，支持大窗口)
+net.ipv4.tcp_window_scaling = 1
+
+# TCP SACK: 启用选择性确认
+net.ipv4.tcp_sack = 1
+
+# 禁用TCP转发时的ECN: 避免兼容性问题
+net.ipv4.tcp_ecn = 0
+
+# ----------------------------------------------------------------------------
+# UDP 缓冲区 (极限配置)
+# ----------------------------------------------------------------------------
+net.ipv4.udp_rmem_min = ${NET[udp_rmem_min]}
+net.ipv4.udp_wmem_min = ${NET[udp_wmem_min]}
+
+# UDP内存页配置 (min/pressure/max)
+net.ipv4.udp_mem = ${NET[udp_mem_min]} ${NET[udp_mem_pressure]} ${NET[udp_mem_max]}
+
+# ----------------------------------------------------------------------------
+# RPS/RFS 多队列负载均衡
+# ----------------------------------------------------------------------------
+# RFS流表条目: 6.5万 (配合RPS使用)
+net.core.rps_sock_flow_entries = 65536
+
+# ----------------------------------------------------------------------------
+# 本地端口范围 (扩大可用端口)
+# ----------------------------------------------------------------------------
+net.ipv4.ip_local_port_range = 1024 65535
+
+# ----------------------------------------------------------------------------
+# IP 转发 (代理服务器必备)
+# ----------------------------------------------------------------------------
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+net.ipv6.conf.default.forwarding = 1
+
+# ----------------------------------------------------------------------------
+# Netfilter 连接跟踪 (极限配置)
+# ----------------------------------------------------------------------------
+# 最大连接跟踪数: 基于内存动态计算
+net.netfilter.nf_conntrack_max = ${NET[conntrack]}
+
+# 已建立连接超时: 1小时
+net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+
+# UDP连接超时: 120秒
+net.netfilter.nf_conntrack_udp_timeout = 120
+
+# 宽松模式: 提升NAT性能
+net.netfilter.nf_conntrack_tcp_be_liberal = 1
+net.netfilter.nf_conntrack_tcp_loose = 1
+
+# ----------------------------------------------------------------------------
+# 虚拟内存优化
+# ----------------------------------------------------------------------------
+# 降低swap使用: 优先使用物理内存
+vm.swappiness = 1
+
+# 缓存压力: 降低以保留更多缓存
+vm.vfs_cache_pressure = 50
+
+# 最小空闲内存: 提高以避免内存碎片
+vm.min_free_kbytes = 65536
+
+# 脏页比例: 延迟磁盘写入以提升性能
+vm.dirty_ratio = 20
+vm.dirty_background_ratio = 5
+
+# ----------------------------------------------------------------------------
+# 文件系统限制 (极限配置)
+# ----------------------------------------------------------------------------
+# 系统级文件句柄上限: 200万
+fs.file-max = 2097152
+
+# 单进程文件句柄上限: 100万
+fs.nr_open = 1048576
+
+# Inotify监控限制
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 524288
+
+# ----------------------------------------------------------------------------
+# 其他网络优化
+# ----------------------------------------------------------------------------
+# 禁用ICMP重定向(安全)
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+
+# 禁用源路由(安全)
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+
+# SYN Cookies: 启用(防SYN flood)
+net.ipv4.tcp_syncookies = 1
+
+# 孤儿socket最大数量
+net.ipv4.tcp_max_orphans = 262144
+
+# TCP内存不足时的最大孤儿数
+net.ipv4.tcp_max_tw_buckets = 262144
+
+# ============================================================================
+# 配置结束
+# ============================================================================
+EOF
+    
+    _ok "✓ 配置文件已生成: $SYSCTL_CONF"
+}
+
+# ============================================================================
+# 生成用户限制配置
+# ============================================================================
+generate_limits_config() {
+    _section "生成用户限制配置"
+    
+    cat > "$LIMITS_CONF" <<EOF
+# BBR极限优化 - 用户资源限制
+# 文件句柄数上限设置为100万
+
+*  soft  nofile  1048576
+*  hard  nofile  1048576
+root  soft  nofile  1048576
+root  hard  nofile  1048576
+EOF
+    
+    _ok "✓ 用户限制配置已生成: $LIMITS_CONF"
+}
+
+# ============================================================================
+# 应用 Sysctl 配置
+# ============================================================================
+apply_sysctl_config() {
+    _section "应用Sysctl配置到运行系统"
+    
+    # 先尝试加载必要的内核模块
+    modprobe tcp_bbr 2>/dev/null || true
+    modprobe sch_fq 2>/dev/null || true
+    modprobe nf_conntrack 2>/dev/null || true
+    
+    # 应用配置
+    if sysctl -p "$SYSCTL_CONF" >/dev/null 2>&1; then
+        _ok "✓ Sysctl配置已成功应用"
+    else
+        _warn "⚠ Sysctl配置应用时有部分警告(可能需要重启或安装BBR内核)"
+        sysctl -p "$SYSCTL_CONF" 2>&1 | grep -i "error\|cannot" || true
+    fi
+    
+    # 设置conntrack哈希表大小
+    local hash=$(( NET[conntrack] / 4 ))
+    if [ -w /sys/module/nf_conntrack/parameters/hashsize ]; then
+        echo "$hash" > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null || true
+        _ok "✓ Conntrack哈希表大小: $hash"
+    fi
+}
+
+# ============================================================================
+# 网卡硬件优化 (极限配置)
+# ============================================================================
+optimize_nic_hardware() {
+    _section "网卡硬件极限优化"
+    
+    local iface="${SYS[iface]}"
+    
+    # ========================================
+    # Ring Buffer 优化
+    # ========================================
+    # 将接收和发送队列设置为最大值的80% (Netflix建议值)
+    if [ "${NIC[rx_max]}" -gt 512 ] && [ "${NIC[tx_max]}" -gt 512 ]; then
+        local rx=$(( NIC[rx_max] * 80 / 100 ))
+        local tx=$(( NIC[tx_max] * 80 / 100 ))
+        
+        [ "$rx" -lt 512 ] && rx=512
+        [ "$tx" -lt 512 ] && tx=512
+        
+        if ethtool -G "$iface" rx "$rx" tx "$tx" 2>/dev/null; then
+            _ok "✓ Ring Buffer: RX=$rx, TX=$tx"
+        else
+            _log "  └─ Ring Buffer调整失败(可能不支持)"
+        fi
+    fi
+    
+    # ========================================
+    # Offload 特性优化
+    # ========================================
+    # 启用硬件卸载以降低CPU负载
+    ethtool -K "$iface" tso on 2>/dev/null || true  # TCP Segmentation Offload
+    ethtool -K "$iface" gso on 2>/dev/null || true  # Generic Segmentation Offload
+    ethtool -K "$iface" sg on 2>/dev/null || true   # Scatter-Gather
+    ethtool -K "$iface" gro on 2>/dev/null || true  # Generic Receive Offload
+    
+    _ok "✓ 硬件卸载: TSO, GSO, SG, GRO 已启用"
+    
+    # UDP GRO 优化 (现代内核支持)
+    ethtool -K "$iface" rx-udp-gro-forwarding on 2>/dev/null || true
+    ethtool -K "$iface" rx-gro-list on 2>/dev/null || true
+    
+    # ========================================
+    # 中断合并 (Coalesce) - 低延迟配置
+    # ========================================
+    # 极限模式: 追求最低延迟
+    # rx-usecs=100: 100微秒或收到64个包后触发中断
+    if ethtool -C "$iface" rx-usecs 100 rx-frames 64 adaptive-rx off 2>/dev/null; then
+        _ok "✓ 中断合并: rx-usecs=100 (低延迟模式)"
+    else
+        _log "  └─ 中断合并调整失败(可能不支持)"
+    fi
+    
+    # ========================================
+    # 多队列优化
+    # ========================================
+    # 将队列数设置为CPU核心数 (最大32)
+    local desired_queues=${SYS[cpu]}
+    [ "$desired_queues" -gt 32 ] && desired_queues=32
+    
+    # 不超过网卡支持的最大队列数
+    if [ "${NIC[queues]}" -gt 0 ] && [ "$desired_queues" -gt "${NIC[queues]}" ]; then
+        desired_queues=${NIC[queues]}
+    fi
+    
+    if ethtool -L "$iface" combined "$desired_queues" 2>/dev/null; then
+        _ok "✓ 多队列: $desired_queues 个队列"
+    fi
+    
+    # ========================================
+    # 虚拟化环境特殊优化
+    # ========================================
+    if [[ "${SYS[virt]}" =~ (kvm|xen) ]] || [[ "${NIC[driver],,}" == *"virtio"* ]]; then
+        # Virtio网卡特殊优化
+        ethtool -K "$iface" tx-nocache-copy off 2>/dev/null || true
+        ethtool -K "$iface" tx-checksum-ipv4 on 2>/dev/null || true
+        _ok "✓ Virtio优化已应用"
+    fi
+}
+
+# ============================================================================
+# CPU掩码生成 (支持最多64核)
+# ============================================================================
+generate_cpu_mask() {
+    local cpu_count=$(to_int "$1")
+    [ "$cpu_count" -le 0 ] && echo "1" && return
+    [ "$cpu_count" -ge 64 ] && echo "ffffffffffffffff" && return
+    
+    # 生成 (2^n - 1) 的十六进制表示
+    if [ "$cpu_count" -le 60 ]; then
+        printf '%x' $(( (1 << cpu_count) - 1 ))
+    else
+        echo "ffffffffffffffff"
+    fi
+}
+
+# ============================================================================
+# RPS/RFS/XPS 多队列负载均衡优化
+# ============================================================================
+optimize_multiqueue() {
+    _section "多队列负载均衡优化 (RPS/RFS/XPS)"
+    
+    local iface="${SYS[iface]}"
+    local cpu_mask=$(generate_cpu_mask "${SYS[cpu]}")
+    local queue_dir="/sys/class/net/$iface/queues"
+    
+    if [ ! -d "$queue_dir" ]; then
+        _warn "⚠ 未找到队列目录，跳过多队列优化"
+        return
+    fi
+    
+    # ========================================
+    # RPS (Receive Packet Steering) 配置
+    # ========================================
+    # 将接收队列分散到所有CPU核心
+    local rps_count=0
+    for rxq in "$queue_dir"/rx-*; do
+        [ -e "$rxq/rps_cpus" ] || continue
+        
+        echo "$cpu_mask" > "$rxq/rps_cpus" 2>/dev/null || true
+        echo 4096 > "$rxq/rps_flow_cnt" 2>/dev/null || true
+        
+        rps_count=$((rps_count + 1))
+    done
+    
+    [ "$rps_count" -gt 0 ] && _ok "✓ RPS: $rps_count 个RX队列已绑定到所有CPU"
+    
+    # ========================================
+    # XPS (Transmit Packet Steering) 配置
+    # ========================================
+    # 将每个发送队列绑定到特定CPU (轮询分配)
+    local xps_count=0
+    local tx_idx=0
+    
+    for txq in "$queue_dir"/tx-*; do
+        [ -e "$txq/xps_cpus" ] || continue
+        
+        # 计算应绑定的CPU编号
+        local cpu_id=$(( tx_idx % SYS[cpu] ))
+        
+        # 生成单个CPU的掩码
+        local single_mask=$(printf '%x' $((1 << cpu_id)))
+        
+        echo "$single_mask" > "$txq/xps_cpus" 2>/dev/null || true
+        
+        xps_count=$((xps_count + 1))
+        tx_idx=$((tx_idx + 1))
+    done
+    
+    [ "$xps_count" -gt 0 ] && _ok "✓ XPS: $xps_count 个TX队列已优化"
+}
+
+# ============================================================================
+# CPU性能模式优化
+# ============================================================================
+optimize_cpu_performance() {
+    _section "CPU性能模式优化"
+    
+    # ========================================
+    # 设置CPU调速器为性能模式
+    # ========================================
+    if has cpufreq-set; then
+        local cpu_count=${SYS[cpu]}
+        for ((i=0; i<cpu_count; i++)); do
+            cpufreq-set -c "$i" -g performance 2>/dev/null || true
+        done
+        _ok "✓ CPU调速器: performance (所有${cpu_count}个核心)"
+    elif has cpupower; then
+        if cpupower frequency-set -g performance >/dev/null 2>&1; then
+            _ok "✓ CPU调速器: performance"
+        fi
+    else
+        _warn "⚠ 未找到cpufreq工具，跳过CPU调速器设置"
+    fi
+    
+    # ========================================
+    # THP (透明大页) 优化
+    # ========================================
+    if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
+        # madvise模式: 仅对显式请求的内存区域启用大页
+        echo madvise > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+        echo defer > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
+        _ok "✓ THP: madvise模式 (按需启用)"
+    fi
+    
+    # ========================================
+    # 禁用不必要的CPU特性以降低延迟
+    # ========================================
+    # 禁用NUMA平衡 (如果是单NUMA节点系统)
+    if [ -f /proc/sys/kernel/numa_balancing ]; then
+        echo 0 > /proc/sys/kernel/numa_balancing 2>/dev/null || true
+        _log "  └─ NUMA自动平衡已禁用"
+    fi
+}
+
+# ============================================================================
+# BBRv3内核安装 - 从GitHub获取
+# ============================================================================
+install_bbrv3_kernel() {
+    _title
+    echo -e "\033[1;36m🚀 BBRv3 内核安装\033[0m"
+    _title
+    
+    echo -e "\n📡 正在从 GitHub 获取最新内核版本信息..."
+    
+    local api_url="https://api.github.com/repos/byJoey/Actions-bbr-v3/releases"
+    
+    # 获取releases数据
+    if ! RELEASE_DATA=$(curl -sL "$api_url" 2>&1); then
+        _err "❌ 无法连接到GitHub API，请检查网络"
+    fi
+    
+    # 过滤x86_64架构的版本
+    local latest_tag=$(echo "$RELEASE_DATA" | jq -r \
+        'map(select(.tag_name | test("x86_64"; "i"))) | sort_by(.published_at) | .[-1].tag_name' 2>/dev/null)
+    
+    if [ -z "$latest_tag" ] || [ "$latest_tag" = "null" ]; then
+        _err "❌ 未找到适合x86_64架构的BBRv3内核版本"
+    fi
+    
+    echo -e "\033[32m✓ 检测到最新版本: $latest_tag\033[0m"
+    
+    # 检查是否已安装
+    local installed_version=$(dpkg -l 2>/dev/null | grep "linux-image" | grep "joeyblog" | \
+        awk '{print $2}' | sed 's/linux-image-//' | head -n 1)
+    
+    if [ -n "$installed_version" ]; then
+        echo -e "📦 当前已安装: \033[33m$installed_version\033[0m"
+        
+        # 提取核心版本号进行比较
+        local core_latest="${latest_tag#x86_64-}"
+        
+        if [[ "$installed_version" == "$core_latest"* ]]; then
+            echo -e "\033[1;32m✅ 您已安装最新版本\033[0m"
+            echo -n -e "\n是否要重新安装？(y/N): "
+            read -r reinstall
+            [[ ! "$reinstall" =~ ^[Yy]$ ]] && return 0
+        fi
+    else
+        echo -e "📦 当前未安装 joeyblog BBRv3 内核"
+    fi
+    
+    # 获取下载链接
+    echo -e "\n📥 正在准备下载内核包..."
+    
+    local asset_urls=$(echo "$RELEASE_DATA" | jq -r \
+        --arg tag "$latest_tag" \
+        '.[] | select(.tag_name == $tag) | .assets[].browser_download_url' 2>/dev/null)
+    
+    if [ -z "$asset_urls" ]; then
+        _err "❌ 无法获取下载链接"
+    fi
+    
+    # 清理旧的下载文件
+    rm -f /tmp/linux-*.deb
+    
+    # 下载所有.deb包
+    local download_count=0
+    for url in $asset_urls; do
+        local filename=$(basename "$url")
+        echo -e "  └─ 下载: \033[36m$filename\033[0m"
+        
+        if wget -q --show-progress --timeout=60 "$url" -P /tmp/; then
+            download_count=$((download_count + 1))
+        else
+            _err "❌ 下载失败: $url"
+        fi
+    done
+    
+    _ok "✓ 已下载 $download_count 个内核包"
+    
+    # 卸载旧版本
+    if [ -n "$installed_version" ]; then
+        echo -e "\n🗑️  正在卸载旧版本内核..."
+        
+        local old_packages=$(dpkg -l 2>/dev/null | grep "joeyblog" | awk '{print $2}' | tr '\n' ' ')
+        
+        if [ -n "$old_packages" ]; then
+            DEBIAN_FRONTEND=noninteractive apt-get remove --purge -y $old_packages >/dev/null 2>&1 || true
+            _ok "✓ 旧内核已卸载"
+        fi
+    fi
+    
+    # 安装新内核
+    echo -e "\n📦 正在安装新内核..."
+    
+    if dpkg -i /tmp/linux-*.deb 2>&1 | tee /tmp/install.log | grep -v "正在选中\|正在解包\|正在设置"; then
+        _ok "✓ 内核包安装完成"
+    else
+        if grep -q "error\|错误" /tmp/install.log; then
+            _err "❌ 内核安装失败，请查看: /tmp/install.log"
+        fi
+    fi
+    
+    # 修复可能的依赖问题
+    apt-get install -f -y >/dev/null 2>&1 || true
+    
+    # 更新引导
+    echo -e "\n🔄 正在更新GRUB引导..."
+    
+    if has update-grub; then
+        if update-grub >/dev/null 2>&1; then
+            _ok "✓ GRUB已更新"
+        else
+            _warn "⚠ GRUB更新失败，但通常不影响使用"
+        fi
+    fi
+    
+    # 清理
+    rm -f /tmp/linux-*.deb /tmp/install.log
+    
+    _title
+    echo -e "\033[1;32m✅ BBRv3 内核安装完成！\033[0m"
+    _title
+    
+    echo -e "\n\033[1;33m⚠️  重要提示:\033[0m"
+    echo -e "  1. \033[1m必须重启系统\033[0m才能加载新内核"
+    echo -e "  2. 重启后选择菜单选项 2 应用网络优化"
+    echo -e "  3. 使用选项 3 验证BBRv3是否成功启用"
+    
+    echo -n -e "\n\033[1;36m💫 是否立即重启系统？(y/N): \033[0m"
+    read -r reboot_choice
+    
+    if [[ "$reboot_choice" =~ ^[Yy]$ ]]; then
+        echo -e "\n\033[36m系统将在 3 秒后重启...\033[0m"
+        sleep 3
+        reboot
+    else
+        echo -e "\n\033[33m请记得稍后手动重启: \033[1msudo reboot\033[0m"
+    fi
+}
+
+# ============================================================================
+# 卸载BBRv3内核
+# ============================================================================
+uninstall_bbrv3_kernel() {
+    _title
+    echo -e "\033[1;36m🗑️  卸载 BBRv3 内核\033[0m"
+    _title
+    
+    # 查找已安装的joeyblog内核包
+    local installed_packages=$(dpkg -l 2>/dev/null | grep "joeyblog" | awk '{print $2}' | tr '\n' ' ')
+    
+    if [ -z "$installed_packages" ]; then
+        echo -e "\n\033[33m⚠ 未找到已安装的 joeyblog 内核包\033[0m"
+        return 0
+    fi
+    
+    echo -e "\n📦 检测到以下内核包:\n"
+    echo "$installed_packages" | tr ' ' '\n' | while read -r pkg; do
+        [ -n "$pkg" ] && echo -e "  • \033[33m$pkg\033[0m"
+    done
+    
+    echo -e "\n\033[1;31m⚠️  警告: 此操作将卸载BBRv3内核，系统将使用默认内核\033[0m"
+    echo -n -e "\n确认卸载？(y/N): "
+    read -r confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "\n\033[36m已取消卸载\033[0m"
+        return 0
+    fi
+    
+    echo -e "\n🗑️  正在卸载..."
+    
+    if DEBIAN_FRONTEND=noninteractive apt-get remove --purge -y $installed_packages >/dev/null 2>&1; then
+        _ok "✓ 内核包已卸载"
+    else
+        _warn "⚠ 卸载过程出现警告，但可能已完成"
+    fi
+    
+    # 更新引导
+    if has update-grub; then
+        update-grub >/dev/null 2>&1 || true
+        _ok "✓ GRUB引导已更新"
+    fi
+    
+    # 清理孤立包
+    apt-get autoremove -y >/dev/null 2>&1 || true
+    
+    echo -e "\n\033[1;32m✅ 卸载完成\033[0m"
+    echo -e "\n\033[33m⚠ 建议重启系统以加载默认内核\033[0m"
+}
+
+# ============================================================================
+# 应用所有网络优化
+# ============================================================================
+apply_all_optimizations() {
+    _title
+    echo -e "\033[1;36m⚡ 开始应用终极网络优化...\033[0m"
+    _title
+    
+    # 检测系统信息
+    detect_system_info
+    
+    # 智能检测网络参数
+    detect_rtt
+    detect_bandwidth
+    
+    # 计算极限缓冲区
+    calculate_extreme_buffers
+    
+    # 生成配置文件
+    generate_sysctl_config
+    generate_limits_config
+    
+    # 应用配置
+    apply_sysctl_config
+    
+    # 硬件优化
+    optimize_nic_hardware
+    optimize_multiqueue
+    optimize_cpu_performance
+    
+    _title
+    echo -e "\033[1;32m✅ 所有优化已成功应用！\033[0m"
+    _title
+    
+    # 显示优化摘要
+    cat <<EOF
+
+📊 \033[1;36m优化摘要\033[0m
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🖥️  系统配置:
+  • CPU: ${SYS[cpu]} 核心
+  • 内存: ${SYS[mem_gb]} GB
+  • 网卡: ${SYS[iface]} (${NIC[driver]})
+
+🌐 网络参数:
+  • 带宽: ${NET[bw]} Mbps
+  • RTT延迟: ${NET[rtt]} ms
+  • BDP: ${NET[bdp_mb]} MB
+
+💾 缓冲配置:
+  • TCP最大缓冲: $((NET[tcp_rmem_max] / 1024 / 1024)) MB
+  • UDP最大缓冲: $((NET[udp_mem_max] * 4 / 1024)) MB
+  • 连接队列: ${NET[backlog]}
+  • Conntrack: ${NET[conntrack]} 条
+
+📁 配置文件:
+  • Sysctl: $SYSCTL_CONF
+  • Limits: $LIMITS_CONF
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+\033[1;33m⚠️  重要提示:\033[0m
+  1. 配置已永久保存，重启后自动生效
+  2. 建议重启系统以确保所有优化完全生效
+  3. 使用选项 3 可以检查BBRv3状态
+
+EOF
+}
+
+# ============================================================================
+# 检查BBRv3状态
+# ============================================================================
+check_bbr_status() {
+    _title
+    echo -e "\033[1;36m📊 BBRv3 状态检查\033[0m"
+    _title
+    
+    local all_ok=true
+    
+    # ========================================
+    # 检查内核版本
+    # ========================================
+    echo -e "\n\033[1;35m[1] 内核版本\033[0m"
+    local current_kernel=$(uname -r)
+    echo -e "  └─ 当前内核: \033[33m$current_kernel\033[0m"
+    
+    if [[ "$current_kernel" == *"joeyblog"* ]]; then
+        echo -e "  └─ \033[32m✓ BBRv3内核已加载\033[0m"
+    else
+        echo -e "  └─ \033[31m✗ 未使用BBRv3内核\033[0m"
+        all_ok=false
+    fi
+    
+    # ========================================
+    # 检查BBR模块
+    # ========================================
+    echo -e "\n\033[1;35m[2] BBR模块\033[0m"
+    
+    if modinfo tcp_bbr &>/dev/null; then
+        local bbr_version=$(modinfo tcp_bbr 2>/dev/null | awk '/^version:/ {print $2}')
+        
+        if [ -n "$bbr_version" ]; then
+            if [ "$bbr_version" = "3" ]; then
+                echo -e "  └─ BBR版本: \033[32m✓ v$bbr_version\033[0m"
+            else
+                echo -e "  └─ BBR版本: \033[33m⚠ v$bbr_version (不是v3)\033[0m"
+                all_ok=false
+            fi
+        else
+            echo -e "  └─ \033[33m⚠ 无法获取BBR版本\033[0m"
+        fi
+        
+        # 显示模块详细信息
+        local bbr_file=$(modinfo tcp_bbr 2>/dev/null | awk '/^filename:/ {print $2}')
+        [ -n "$bbr_file" ] && echo -e "  └─ 模块路径: $bbr_file"
+    else
+        echo -e "  └─ \033[31m✗ tcp_bbr 模块未加载\033[0m"
+        all_ok=false
+    fi
+    
+    # ========================================
+    # 检查当前配置
+    # ========================================
+    echo -e "\n\033[1;35m[3] 当前配置\033[0m"
+    
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
+    local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "unknown")
+    
+    if [ "$current_cc" = "bbr" ]; then
+        echo -e "  └─ 拥塞控制: \033[32m✓ $current_cc\033[0m"
+    else
+        echo -e "  └─ 拥塞控制: \033[31m✗ $current_cc (应为bbr)\033[0m"
+        all_ok=false
+    fi
+    
+    if [ "$current_qdisc" = "fq" ]; then
+        echo -e "  └─ 队列算法: \033[32m✓ $current_qdisc\033[0m"
+    else
+        echo -e "  └─ 队列算法: \033[33m⚠ $current_qdisc (推荐fq)\033[0m"
+    fi
+    
+    # ========================================
+    # 检查可用算法
+    # ========================================
+    echo -e "\n\033[1;35m[4] 可用算法\033[0m"
+    local available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "")
+    echo -e "  └─ $available_cc"
+    
+    # ========================================
+    # 检查关键优化参数
+    # ========================================
+    echo -e "\n\033[1;35m[5] 关键优化参数\033[0m"
+    
+    local somaxconn=$(sysctl -n net.core.somaxconn 2>/dev/null || echo 0)
+    local rmem_max=$(sysctl -n net.core.rmem_max 2>/dev/null || echo 0)
+    local conntrack=$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null || echo 0)
+    
+    echo -e "  └─ somaxconn: $(printf "%'d" $somaxconn)"
+    echo -e "  └─ rmem_max: $(( rmem_max / 1024 / 1024 )) MB"
+    echo -e "  └─ conntrack_max: $(printf "%'d" $conntrack)"
+    
+    # ========================================
+    # 最终结论
+    # ========================================
+    _title
+    
+    if $all_ok; then
+        echo -e "\n\033[1;32m🎉 BBRv3 已完美配置并正常运行！\033[0m\n"
+    else
+        echo -e "\n\033[1;33m⚠️  BBRv3 未完全生效，可能需要:\033[0m"
+        echo -e "  1. 安装BBRv3内核 (选项 1)"
+        echo -e "  2. 重启系统以加载新内核"
+        echo -e "  3. 应用网络优化 (选项 2)\n"
+    fi
+}
+
+# ============================================================================
+# 主菜单
+# ============================================================================
+show_main_menu() {
+    clear
+    _title
+    
+    # ASCII Art标题
+    cat << 'EOF'
+    ____  ____  ____       _____ 
+   | __ )| __ )|  _ \__   _|___ / 
+   |  _ \|  _ \| |_) \ \ / / |_ \ 
+   | |_) | |_) |  _ < \ V / ___) |
+   |____/|____/|_| \_\ \_/ |____/ 
+                                  
+   Debian 终极网络优化 - 极限性能版
+EOF
+    
+    _title
+    
+    # 显示系统信息(如果已检测)
+    if [ -n "${SYS[kernel]:-}" ]; then
+        echo -e "\n📊 \033[1;36m系统信息\033[0m"
+        echo -e "  • 内核: ${SYS[kernel]}"
+        echo -e "  • CPU: ${SYS[cpu]} 核"
+        echo -e "  • 内存: ${SYS[mem_gb]} GB"
+        [ -n "${SYS[iface]:-}" ] && echo -e "  • 网卡: ${SYS[iface]}"
+    fi
+    
+    # 显示当前BBR状态
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
+    local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "未知")
+    
+    echo -e "\n🌐 \033[1;36m当前配置\033[0m"
+    
+    if [ "$current_cc" = "bbr" ]; then
+        echo -e "  • 拥塞控制: \033[32m$current_cc ✓\033[0m"
+    else
+        echo -e "  • 拥塞控制: \033[33m$current_cc\033[0m"
+    fi
+    
+    echo -e "  • 队列算法: $current_qdisc"
+    
+    _title
+    
+    # 菜单选项
+    echo -e "\n\033[1;33m请选择操作:\033[0m\n"
+    echo -e "  \033[1;36m1.\033[0m 🚀 安装 BBRv3 内核 (自动获取最新版)"
+    echo -e "  \033[1;36m2.\033[0m ⚡ 应用终极网络优化 (极限性能模式)"
+    echo -e "  \033[1;36m3.\033[0m 📊 检查 BBRv3 状态"
+    echo -e "  \033[1;36m4.\033[0m 🗑️  卸载 BBRv3 内核"
+    echo -e "  \033[1;36m0.\033[0m 🚪 退出脚本"
+    
+    _title
+    
+    # 作者信息
+    echo -e "\n\033[90m版本: $VERSION\033[0m"
+    echo -e "\033[90m作者: 整合自社区优化方案\033[0m"
+    
+    _title
+    
+    echo -n -e "\n请输入选项 (0-4): "
+}
+
+# ============================================================================
+# 主程序入口
+# ============================================================================
+main() {
+    # 首次运行时的系统检查
+    check_system
+    install_dependencies
+    
+    # 初次检测系统信息
+    detect_system_info >/dev/null 2>&1 || true
+    
+    # 主循环
+    while true; do
+        show_main_menu
+        read -r choice
+        
+        case "$choice" in
+            1)
+                # 安装BBRv3内核
+                install_bbrv3_kernel
+                echo -e "\n\033[90m按回车键继续...\033[0m"
+                read -r
+                ;;
+                
+            2)
+                # 应用网络优化
+                apply_all_optimizations
+                echo -e "\n\033[90m按回车键继续...\033[0m"
+                read -r
+                ;;
+                
+            3)
+                # 检查BBRv3状态
+                check_bbr_status
+                echo -e "\n\033[90m按回车键继续...\033[0m"
+                read -r
+                ;;
+                
+            4)
+                # 卸载BBRv3内核
+                uninstall_bbrv3_kernel
+                echo -e "\n\033[90m按回车键继续...\033[0m"
+                read -r
+                ;;
+                
+            0)
+                # 退出
+                _title
+                echo -e "\n\033[1;36m👋 感谢使用 BBRv3 终极优化脚本！\033[0m"
+                echo -e "\n\033[90m如有问题，请访问相关社区反馈\033[0m\n"
+                _title
+                exit 0
+                ;;
+                
+            *)
+                echo -e "\n\033[31m❌ 无效的选项，请输入 0-4\033[0m"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# ============================================================================
+# 脚本启动
+# ============================================================================
+
+# 显示启动横幅
+clear
+_title
+cat << 'EOF'
+╔════════════════════════════════════════════════════════════╗
+║                                                            ║
+║     Debian 12/13 终极网络优化脚本 - BBRv3 极限版         ║
+║                                                            ║
+║     • 自动安装最新 BBRv3 内核                             ║
+║     • 智能检测网络参数 (RTT/带宽/BDP)                    ║
+║     • 极限性能模式优化 (5倍BDP缓冲)                      ║
+║     • 超大连接队列 (52万 somaxconn)                      ║
+║     • 低延迟网卡调优 (100μs中断合并)                     ║
+║     • CPU性能模式 + 多队列负载均衡                        ║
+║                                                            ║
+║     适用: Debian 12/13 (x86_64) 纯净系统                 ║
+║     模式: 默认极限性能 (无需手动选择参数)                ║
+║                                                            ║
+╚════════════════════════════════════════════════════════════╝
+EOF
+_title
+
+echo -e "\n\033[1;33m⚠️  使用须知:\033[0m"
+echo -e "  1. 本脚本采用\033[1m极限性能模式\033[0m，所有参数已调至最激进配置"
+echo -e "  2. 优化基于社区验证的最佳实践，稳定可靠"
+echo -e "  3. 自动检测硬件并动态计算最优参数"
+echo -e "  4. 建议在纯净系统上使用，避免与其他优化冲突"
+
+echo -e "\n\033[1;36m📋 推荐操作流程:\033[0m"
+echo -e "  \033[32m①\033[0m 选择选项 1 安装 BBRv3 内核"
+echo -e "  \033[32m②\033[0m 重启系统以加载新内核"
+echo -e "  \033[32m③\033[0m 选择选项 2 应用终极网络优化"
+echo -e "  \033[32m④\033[0m 选择选项 3 验证 BBRv3 状态"
+
+_title
+
+echo -n -e "\n\033[1;36m按回车键开始...\033[0m"
+read -r
+
+# 启动主程序
+main
