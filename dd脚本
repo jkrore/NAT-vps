@@ -10,4 +10,5 @@ curl -O https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh 
 bash reinstall.sh debian 13 --ssh-port 22 --web-port 8080 --password "Huawei@123..."
 
 #虚拟内存
-git clone --recurse-submodules https://github.com/ecdye/zram-config && cd zram-config && sudo ./install.bash
+git clone --recurse-submodules https://github.com/ecdye/zram-config && cd zram-config && ./install.bash
+
