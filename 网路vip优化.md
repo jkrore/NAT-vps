@@ -8,10 +8,10 @@
 *   一个纯净的 **Debian 12** 或 **Debian 13** 系统。
 *   **root** 用户权限。
 ---
-## 🚀 快速使用指南
-此流程适用于一台刚刚 `dd` 完的纯净 Debian 系统。请以 `root` 用户身份登录服务器，然后按顺序执行以下步骤。
+```bash
 # 推荐的安全优化组合 (优化I/O + 安装动态调优服务 + 生成工具)
 curl -sL https://raw.githubusercontent.com/jkrore/NAT-vps/main/vip0.sh | bash -s --  --apply --apply-io-limits  --apply-cpu-tuning --apply-memory-tuning --cleanup-services --apply-host-specifics --apply-zram --apply-fstab --apply-basics --apply-hardening
+```
 
 ### 步骤一：执行 `vip1.sh` (环境准备)
 此脚本会为后续的核心优化做好一切准备工作，确保 `vip2.sh` 不会因缺少工具而报错。
