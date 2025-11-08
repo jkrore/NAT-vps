@@ -11,7 +11,7 @@ IFS=$'\n\t'
 # ============================================================
 # 元信息
 # ============================================================
-readonly VERSION="3.0-production-fixed"
+readonly SCRIPT_VERSION="3.0-production-fixed"
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -79,7 +79,7 @@ save_state(){
   cat > "$tmp_file" <<EOF
 # Proxy Optimizer State File
 # Generated: $(date)
-# Version: $VERSION
+# Version: $SCRIPT_VERSION
 MODE="${STATE[mode]}"
 FORCE_RTT="${STATE[force_rtt]}"
 FORCE_BW="${STATE[force_bw]}"
@@ -120,7 +120,7 @@ readonly ISP_LABELS=("移动" "联通" "电信")
 # ============================================================
 check_root(){ if [ "$(id -u)" -ne 0 ]; then _err "必须使用 root 用户执行此脚本"; fi }
 check_lock(){ if [ -f "$LOCK_FILE" ]; then local pid; pid=$(cat "$LOCK_FILE" 2>/dev/null || echo ""); if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then _err "脚本已在运行 (PID: $pid)"; else rm -f "$LOCK_FILE"; fi; fi; echo $$ > "$LOCK_FILE"; }
-check_system_type(){ if ! has apt-get; then _err "仅支持 Debian/Ubuntu 系统"; fi; if [ -f /etc/os-release ]; then source /etc/os-release; _ok "系统: ${NAME:-Unknown} ${VERSION:-Unknown}"; fi }
+check_system_type(){ if ! has apt-get; then _err "仅支持 Debian/Ubuntu 系统"; fi; if [ -f /etc/os-release ]; then source /etc/os-release; _ok "系统: ${NAME:-Unknown} ${SCRIPT_VERSION:-Unknown}"; fi }
 
 install_dependencies(){ _section "检查并安装依赖"; local required_packages=(curl wget jq ethtool bc gnupg lsb-release ca-certificates net-tools sysstat iperf3); local missing_packages=(); for pkg in "${required_packages[@]}"; do if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then missing_packages+=("$pkg"); _debug "缺少包: $pkg"; fi; done; if [ ${#missing_packages[@]} -eq 0 ]; then _ok "所有依赖已安装"; return 0; fi; _log "需要安装 ${#missing_packages[@]} 个包: ${missing_packages[*]}"; if ! safe_run "apt-get update -qq"; then _warn "软件源更新失败，但将继续尝试安装"; fi; export DEBIAN_FRONTEND=noninteractive; if safe_run "apt-get install -y -qq ${missing_packages[*]} --no-install-recommends"; then _ok "依赖安装完成"; else _warn "部分依赖安装失败，某些功能可能受限"; fi }
 
