@@ -157,10 +157,7 @@ is_valid_int() {
 }
 
 run_cmd() { 
-  if ! eval "$@" 2>/dev/null; then
-    _warn "命令执行失败(已忽略): $*"
-    return 1
-  fi
+  eval "$@" 2>/dev/null || _warn "命令执行失败(已忽略): $*"
   return 0
 }
 
@@ -1681,6 +1678,16 @@ main() {
   # 检查 root 和系统
   check_root
   check_and_install_dependencies
+  
+  # 检查核心状态是否加载成功，如果没有，则自动执行一次检测
+  if [ "${SYSTEM_DETECTED:-0}" -eq 0 ] || [ -z "${SYS[kernel]:-}" ]; then
+    _log "未检测到系统信息或状态加载不完整，将自动执行一次检测..."
+    detect_system_info
+    detect_network_params
+    calculate_buffers
+    _log "自动检测完成，按回车继续..."
+    read -r
+  fi
   
   # 主循环
   while true; do
