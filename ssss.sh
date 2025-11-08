@@ -1,4 +1,2068 @@
-if ! [[ "$isp_id" =~ ^[1-3]$ ]]; then
+#!/usr/bin/env bash
+# ============================================================
+# 代理翻墙网络终极优化脚本 v3.0 (生产级)
+# 作者：专为代理服务器优化设计
+# 架构：模块化 + 状态持久化 + 完整错误处理
+# 执行：自上而下 - 检查→定义→交互→执行
+# ============================================================
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# ============================================================
+# 第一阶段：全局常量与路径定义
+# ============================================================
+
+readonly VERSION="3.0-production"
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# 工作目录
+readonly TMP_DIR="/tmp/proxy-opt-$$"
+readonly STATE_DIR="/var/lib/proxy-optimizer"
+readonly STATE_FILE="${STATE_DIR}/state.conf"
+readonly LOCK_FILE="/var/lock/proxy-optimizer.lock"
+
+# 配置文件路径
+readonly SYSCTL_FILE="/etc/sysctl.d/99-proxy-ultimate.conf"
+readonly MONITOR_SCRIPT="/usr/local/bin/proxy-ultimate-monitor.sh"
+readonly MONITOR_SERVICE="/etc/systemd/system/proxy-ultimate-monitor.service"
+readonly HEALTH_SCRIPT="/usr/local/bin/proxy-probe-health.sh"
+readonly LOGROTATE_FILE="/etc/logrotate.d/proxy-ultimate-monitor"
+
+# 日志文件
+readonly LOG_FILE="/var/log/proxy-optimizer.log"
+
+# 清理函数
+cleanup() {
+  rm -rf "$TMP_DIR"
+  rm -f "$LOCK_FILE"
+}
+trap cleanup EXIT INT TERM
+
+# 创建必要目录
+mkdir -p "$TMP_DIR" "$STATE_DIR"
+
+# ============================================================
+# 第二阶段：日志与工具函数定义
+# ============================================================
+
+# 日志函数
+log() {
+  local level="$1"
+  shift
+  local msg="$*"
+  local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  echo "[$timestamp] [$level] $msg" | tee -a "$LOG_FILE"
+}
+
+_log() { 
+  printf "\033[36m[%s]\033[0m %s\n" "$(date +%T)" "$*"
+  log "INFO" "$*"
+}
+
+_ok() { 
+  printf "\033[32m[✓]\033[0m %s\n" "$*"
+  log "OK" "$*"
+}
+
+_warn() { 
+  printf "\033[33m[!]\033[0m %s\n" "$*" >&2
+  log "WARN" "$*"
+}
+
+_err() { 
+  printf "\033[31m[✗]\033[0m %s\n" "$*" >&2
+  log "ERROR" "$*"
+  exit 1
+}
+
+_section() { 
+  printf "\n\033[1;35m╔══════════════════════════════════════════╗\033[0m\n"
+  printf "\033[1;35m║  %-38s║\033[0m\n" "$*"
+  printf "\033[1;35m╚══════════════════════════════════════════╝\033[0m\n"
+  log "SECTION" "$*"
+}
+
+_debug() {
+  if [ "${DEBUG:-0}" = "1" ]; then
+    printf "\033[90m[DEBUG] %s\033[0m\n" "$*" >&2
+    log "DEBUG" "$*"
+  fi
+}
+
+# 工具函数
+has() { command -v "$1" >/dev/null 2>&1; }
+
+to_int() {
+  local v="${1:-0}"
+  v="${v//[^0-9]/}"
+  if [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge 0 ]; then
+    echo "$v"
+  else
+    echo "0"
+  fi
+}
+
+is_valid_int() {
+  local v="$1"
+  [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] 2>/dev/null
+}
+
+safe_run() {
+  _debug "执行命令: $*"
+  if eval "$@" 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+    return 0
+  else
+    _debug "命令失败: $*"
+    return 1
+  fi
+}
+
+pause() {
+  echo ""
+  echo "按回车键继续..."
+  read -r
+}
+
+# CPU 掩码生成
+cpu_mask_hex() {
+  local n=$(to_int "$1")
+  [ "$n" -le 0 ] && echo "1" && return
+  [ "$n" -ge 64 ] && echo "ffffffffffffffff" && return
+  
+  if [ "$n" -lt 61 ]; then
+    printf '%x' $(( (1 << n) - 1 ))
+  elif has python3; then
+    python3 -c "n=$n; print(format((1<<n)-1,'x'))" 2>/dev/null || echo "ffffffffffffffff"
+  else
+    echo "ffffffffffffffff"
+  fi
+}
+
+# ============================================================
+# 第三阶段：状态管理系统
+# ============================================================
+
+# 默认状态
+declare -A STATE=(
+  [mode]="aggressive"
+  [force_rtt]=""
+  [force_bw]=""
+  [selected_region]=""
+  [selected_isp]=""
+  [selected_ip]=""
+  [selected_rtt]=""
+  [system_detected]="0"
+  [network_detected]="0"
+  [buffers_calculated]="0"
+  [optimization_applied]="0"
+)
+
+declare -A SYS=()
+declare -A NET=()
+declare -A NIC=()
+
+# 保存状态（安全写入）
+save_state() {
+  local tmp_file="${STATE_FILE}.tmp"
+  
+  cat > "$tmp_file" <<EOF
+# Proxy Optimizer State File
+# Generated: $(date)
+# Version: $VERSION
+
+# User Settings
+MODE="${STATE[mode]}"
+FORCE_RTT="${STATE[force_rtt]}"
+FORCE_BW="${STATE[force_bw]}"
+
+# Probe Results
+SELECTED_REGION="${STATE[selected_region]}"
+SELECTED_ISP="${STATE[selected_isp]}"
+SELECTED_IP="${STATE[selected_ip]}"
+SELECTED_RTT="${STATE[selected_rtt]}"
+
+# Status Flags
+SYSTEM_DETECTED="${STATE[system_detected]}"
+NETWORK_DETECTED="${STATE[network_detected]}"
+BUFFERS_CALCULATED="${STATE[buffers_calculated]}"
+OPTIMIZATION_APPLIED="${STATE[optimization_applied]}"
+
+# System Info (if detected)
+EOF
+
+  # 安全序列化关联数组
+  if [ "${STATE[system_detected]}" = "1" ]; then
+    {
+      echo "# SYS Array"
+      for key in "${!SYS[@]}"; do
+        printf "SYS[%s]=%q\n" "$key" "${SYS[$key]}"
+      done
+      
+      echo "# NET Array"
+      for key in "${!NET[@]}"; do
+        printf "NET[%s]=%q\n" "$key" "${NET[$key]}"
+      done
+      
+      echo "# NIC Array"
+      for key in "${!NIC[@]}"; do
+        printf "NIC[%s]=%q\n" "$key" "${NIC[$key]}"
+      done
+    } >> "$tmp_file"
+  fi
+  
+  # 原子替换
+  mv -f "$tmp_file" "$STATE_FILE"
+  chmod 600 "$STATE_FILE"
+  _debug "状态已保存到 $STATE_FILE"
+}
+
+# 加载状态（安全读取）
+load_state() {
+  if [ ! -f "$STATE_FILE" ]; then
+    _debug "状态文件不存在，使用默认值"
+    return 0
+  fi
+  
+  _debug "加载状态文件: $STATE_FILE"
+  
+  # 安全加载
+  if ! source "$STATE_FILE" 2>/dev/null; then
+    _warn "状态文件损坏，已重置"
+    rm -f "$STATE_FILE"
+    return 1
+  fi
+  
+  # 更新 STATE 数组
+  STATE[mode]="${MODE:-aggressive}"
+  STATE[force_rtt]="${FORCE_RTT:-}"
+  STATE[force_bw]="${FORCE_BW:-}"
+  STATE[selected_region]="${SELECTED_REGION:-}"
+  STATE[selected_isp]="${SELECTED_ISP:-}"
+  STATE[selected_ip]="${SELECTED_IP:-}"
+  STATE[selected_rtt]="${SELECTED_RTT:-}"
+  STATE[system_detected]="${SYSTEM_DETECTED:-0}"
+  STATE[network_detected]="${NETWORK_DETECTED:-0}"
+  STATE[buffers_calculated]="${BUFFERS_CALCULATED:-0}"
+  STATE[optimization_applied]="${OPTIMIZATION_APPLIED:-0}"
+  
+  _debug "状态加载完成"
+}
+
+# ============================================================
+# 第四阶段：地域运营商数据定义
+# ============================================================
+
+declare -A REGIONS_IPV4=(
+  ["上海"]="183.193.195.52 140.207.236.211 61.170.80.224"
+  ["北京"]="111.132.33.234 123.126.74.241 220.181.141.62"
+  ["广东"]="183.240.215.141 122.13.173.213 14.116.174.67"
+  ["江苏"]="36.150.72.122 218.98.46.62 221.229.203.57"
+  ["浙江"]="112.13.210.86 124.160.144.214 122.228.6.140"
+  ["四川"]="112.45.29.107 119.6.226.87 182.140.222.120"
+  ["湖北"]="111.48.204.91 122.188.1.46 171.43.200.232"
+  ["湖南"]="111.22.253.121 61.240.220.8 113.219.200.211"
+  ["河南"]="111.7.88.239 123.6.6.95 36.99.32.68"
+  ["河北"]="111.62.129.51 221.195.63.207 124.238.112.166"
+  ["山东"]="120.220.200.235 116.196.134.235 140.249.226.28"
+  ["福建"]="183.253.58.91 36.248.50.117 125.77.141.147"
+  ["安徽"]="112.29.208.234 211.91.68.233 117.66.50.79"
+  ["江西"]="117.163.60.130 116.153.79.107 106.225.224.168"
+  ["重庆"]="221.178.37.53 113.207.38.107 219.153.156.15"
+  ["陕西"]="36.163.206.252 124.89.110.205 113.141.190.13"
+  ["云南"]="36.147.59.95 180.130.96.87 182.242.90.222"
+  ["贵州"]="117.187.205.58 220.197.201.184 119.0.107.88"
+  ["山西"]="183.201.217.212 221.204.69.240 1.71.88.66"
+  ["甘肃"]="36.142.6.184 116.176.95.38 118.183.154.36"
+  ["辽宁"]="36.131.173.23 218.61.192.237 42.202.220.14"
+  ["吉林"]="36.135.15.29 139.215.162.53 36.104.134.91"
+  ["黑龙江"]="111.42.114.74 1.189.232.55 42.185.157.195"
+  ["内蒙古"]="117.161.74.9 116.136.37.50 36.102.211.14"
+  ["广西"]="36.159.112.50 121.31.230.218 222.216.123.115"
+  ["海南"]="111.29.14.183 113.59.44.60 124.225.127.237"
+  ["天津"]="111.32.184.158 220.194.123.111 42.81.179.153"
+  ["宁夏"]="111.51.158.194 42.63.65.85 222.75.63.58"
+  ["新疆"]="36.189.11.227 116.178.75.25 110.157.250.207"
+  ["西藏"]="117.180.226.125 116.172.148.16 113.62.123.11"
+  ["青海"]="111.12.213.165 139.170.154.39 223.221.179.79"
+)
+
+readonly ISP_LABELS=("移动" "联通" "电信")
+
+# ============================================================
+# 第五阶段：依赖检查与环境准备
+# ============================================================
+
+check_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    _err "必须使用 root 用户执行此脚本"
+  fi
+}
+
+check_lock() {
+  if [ -f "$LOCK_FILE" ]; then
+    local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      _err "脚本已在运行 (PID: $pid)"
+    else
+      rm -f "$LOCK_FILE"
+    fi
+  fi
+  echo $$ > "$LOCK_FILE"
+}
+
+check_system_type() {
+  if ! has apt-get; then
+    _err "仅支持 Debian/Ubuntu 系统"
+  fi
+  
+  if [ -f /etc/os-release ]; then
+    source /etc/os-release
+    _ok "系统: ${NAME:-Unknown} ${VERSION:-Unknown}"
+  fi
+}
+
+# 完善的依赖检查（修复假报错）
+install_dependencies() {
+  _section "检查并安装依赖"
+  
+  local required_packages=(
+    curl
+    wget
+    jq
+    ethtool
+    bc
+    gnupg
+    lsb-release
+    ca-certificates
+    net-tools
+    sysstat
+    iperf3
+  )
+  
+  local missing_packages=()
+  
+  _log "检查已安装的包..."
+  for pkg in "${required_packages[@]}"; do
+    # 使用 dpkg-query 精确检查
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+      missing_packages+=("$pkg")
+      _debug "缺少包: $pkg"
+    fi
+  done
+  
+  if [ ${#missing_packages[@]} -eq 0 ]; then
+    _ok "所有依赖已安装"
+    return 0
+  fi
+  
+  _log "需要安装 ${#missing_packages[@]} 个包: ${missing_packages[*]}"
+  
+  # 更新软件源
+  _log "更新软件源（可能需要几分钟）..."
+  if ! safe_run "apt-get update -qq"; then
+    _warn "软件源更新失败，但将继续尝试安装"
+  fi
+  
+  # 安装缺失的包
+  _log "安装依赖包..."
+  export DEBIAN_FRONTEND=noninteractive
+  
+  if safe_run "apt-get install -y -qq ${missing_packages[*]} --no-install-recommends"; then
+    _ok "依赖安装完成"
+  else
+    _warn "部分依赖安装失败，某些功能可能受限"
+  fi
+}
+
+# ============================================================
+# 第六阶段：系统信息检测
+# ============================================================
+
+detect_system_info() {
+  _section "系统信息检测"
+  
+  # 基础信息
+  SYS[kernel]=$(uname -r)
+  SYS[cpu]=$(nproc)
+  SYS[mem_kb]=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+  SYS[mem_bytes]=$((SYS[mem_kb] * 1024))
+  SYS[mem_gb]=$(awk -v b="${SYS[mem_bytes]}" 'BEGIN{printf "%.1f", b/1024/1024/1024}')
+  
+  # 虚拟化检测
+  if has systemd-detect-virt; then
+    SYS[virt]=$(systemd-detect-virt 2>/dev/null || echo "unknown")
+  else
+    SYS[virt]="unknown"
+  fi
+  
+  # NUMA
+  SYS[numa_nodes]=$(lscpu 2>/dev/null | awk '/^NUMA node\(s\):/ {print $NF}' || echo 1)
+  
+  # 网卡检测
+  SYS[iface]=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
+  
+  if [ -z "${SYS[iface]}" ]; then
+    SYS[iface]=$(ip -o link show | awk -F': ' '$2!~/lo|virbr|docker|veth/ {print $2; exit}')
+  fi
+  
+  if [ -z "${SYS[iface]}" ]; then
+    _err "无法检测主网卡接口"
+  fi
+  
+  # 网卡详情（安全读取）
+  local iface="${SYS[iface]}"
+  NIC[driver]=$(ethtool -i "$iface" 2>/dev/null | awk '/driver:/ {print $2}' || echo "unknown")
+  NIC[queues]=$(ethtool -l "$iface" 2>/dev/null | awk '/Combined:/ {print $2; exit}' || echo "1")
+  
+  # Ring Buffer（安全读取，防止报错）
+  local rx_output=$(ethtool -g "$iface" 2>/dev/null)
+  if [ -n "$rx_output" ]; then
+    NIC[rx_max]=$(echo "$rx_output" | awk '/^RX:/{getline; if($1 ~ /^[0-9]+$/) print $1; else print 0}' || echo 0)
+    NIC[tx_max]=$(echo "$rx_output" | awk '/^TX:/{getline; if($1 ~ /^[0-9]+$/) print $1; else print 0}' || echo 0)
+  else
+    NIC[rx_max]=0
+    NIC[tx_max]=0
+  fi
+  
+  # 确保是数字
+  NIC[rx_max]=$(to_int "${NIC[rx_max]}")
+  NIC[tx_max]=$(to_int "${NIC[tx_max]}")
+  
+  NIC[numa]=$(cat "/sys/class/net/$iface/device/numa_node" 2>/dev/null || echo "-1")
+  
+  # 更新状态
+  STATE[system_detected]=1
+  save_state
+  
+  _ok "内核: ${SYS[kernel]}"
+  _ok "CPU: ${SYS[cpu]} 核心"
+  _ok "内存: ${SYS[mem_gb]} GB"
+  _ok "网卡: ${iface} (驱动: ${NIC[driver]})"
+  _ok "虚拟化: ${SYS[virt]}"
+}
+
+detect_network_params() {
+  _section "网络参数检测"
+  
+  # RTT 检测逻辑（优先级）
+  local rtt_source="auto"
+  
+  if [ -n "${STATE[force_rtt]}" ] && [ "${STATE[force_rtt]}" != "0" ]; then
+    NET[rtt]="${STATE[force_rtt]}"
+    rtt_source="manual"
+  elif [ -n "${STATE[selected_rtt]}" ] && [ "${STATE[selected_rtt]}" != "0" ]; then
+    NET[rtt]="${STATE[selected_rtt]}"
+    rtt_source="probe"
+  else
+    # 自动检测
+    _log "向多个 DNS 发送 ping 检测 RTT..."
+    
+    declare -A targets=(["1.1.1.1"]=5 ["8.8.8.8"]=3 ["9.9.9.9"]=2)
+    local total_weighted=0 total_weight=0
+    
+    for target in "${!targets[@]}"; do
+      local weight=${targets[$target]}
+      if ping -c 4 -W 2 -i 0.2 "$target" >"${TMP_DIR}/ping_${target//./}" 2>/dev/null; then
+        local median=$(grep -Eo 'time=[0-9.]+' "${TMP_DIR}/ping_${target//./}" | \
+                       awk -F= '{print $2}' | sort -n | awk 'NR==2{print; exit}')
+        
+        if [ -n "$median" ]; then
+          total_weighted=$(awk -v a="$total_weighted" -v m="$median" -v w="$weight" \
+                           'BEGIN{printf "%.2f", a + m*w}')
+          total_weight=$((total_weight + weight))
+          _log "  $target: ${median}ms"
+        fi
+      fi
+    done
+    
+    if [ "$total_weight" -gt 0 ]; then
+      NET[rtt]=$(awk -v a="$total_weighted" -v w="$total_weight" 'BEGIN{printf "%.0f", a/w}')
+    else
+      NET[rtt]=50
+      _warn "RTT 检测失败，使用默认值"
+    fi
+  fi
+  
+  _ok "RTT: ${NET[rtt]} ms (来源: $rtt_source)"
+  
+  # 带宽检测
+  local bw_source="auto"
+  
+  if [ -n "${STATE[force_bw]}" ] && [ "${STATE[force_bw]}" != "0" ]; then
+    NET[bw]="${STATE[force_bw]}"
+    bw_source="manual"
+  else
+    local link_speed=$(ethtool "${SYS[iface]}" 2>/dev/null | \
+                       awk '/Speed:/ {print $2}' | tr -cd '0-9')
+    
+    if [ -n "$link_speed" ] && [ "$link_speed" -gt 0 ]; then
+      NET[bw]="$link_speed"
+    else
+      # 估算
+      local cpu_bw=$((SYS[cpu] * 500))
+      local mem_bw=$(awk -v m="${SYS[mem_gb]}" 'BEGIN{printf "%.0f", m*400}')
+      NET[bw]=$(( (cpu_bw < mem_bw ? cpu_bw : mem_bw) * 80 / 100 ))
+      [ "${NET[bw]}" -lt 10 ] && NET[bw]=10
+    fi
+  fi
+  
+  _ok "带宽: ${NET[bw]} Mbps (来源: $bw_source)"
+  
+  # BBR 检测
+  local avail_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "")
+  NET[avail_cc]="$avail_cc"
+  
+  local best_bbr="none"
+  for mod in tcp_bbr3 tcp_bbrv2 tcp_bbr2 tcp_bbr; do
+    if grep -qw "$mod" /proc/modules 2>/dev/null || echo "$avail_cc" | grep -qw "${mod#tcp_}"; then
+      best_bbr="$mod"
+      break
+    fi
+  done
+  NET[bbr_best]="$best_bbr"
+  
+  _ok "BBR: $best_bbr"
+  
+  STATE[network_detected]=1
+  save_state
+}
+
+calculate_buffers() {
+  _section "计算缓冲区参数"
+  
+  if [ "${STATE[network_detected]}" != "1" ]; then
+    _warn "请先检测网络参数"
+    return 1
+  fi
+  
+  local bw=${NET[bw]}
+  local rtt=${NET[rtt]}
+  local mode=${STATE[mode]}
+  
+  # BDP
+  local bdp=$(awk -v bw="$bw" -v rtt="$rtt" 'BEGIN{printf "%.0f", bw*125*rtt}')
+  NET[bdp]=$bdp
+  NET[bdp_mb]=$(awk -v b="$bdp" 'BEGIN{printf "%.2f", b/1024/1024}')
+  
+  _log "BDP: ${bdp} bytes (${NET[bdp_mb]} MB)"
+  
+  # 内存限制
+  local mem15=$((SYS[mem_bytes] * 15 / 100))
+  local mem10=$((SYS[mem_bytes] * 10 / 100))
+  
+  # 模式倍数
+  local mult=3
+  case "$mode" in
+    aggressive) mult=4 ;;
+    latency) mult=2 ;;
+  esac
+  
+  # TCP
+  local tcp_max=$((bdp * mult))
+  [ "$tcp_max" -gt "$mem15" ] && tcp_max=$mem15
+  [ "$tcp_max" -lt 65536 ] && tcp_max=65536
+  
+  NET[tcp_rmem_max]=$tcp_max
+  NET[tcp_wmem_max]=$tcp_max
+  NET[tcp_rmem_def]=131072
+  NET[tcp_rmem_min]=4096
+  NET[tcp_wmem_def]=131072
+  NET[tcp_wmem_min]=4096
+  
+  _ok "TCP 缓冲: 最大=$((tcp_max/1024/1024))MB"
+  
+  # UDP
+  local udp_max=$((bdp * 2))
+  [ "$udp_max" -gt "$mem10" ] && udp_max=$mem10
+  [ "$udp_max" -lt 65536 ] && udp_max=65536
+  
+  NET[udp_rmem_min]=16384
+  NET[udp_wmem_min]=16384
+  
+  local page=4096
+  NET[udp_mem_min]=$((udp_max / page / 4))
+  NET[udp_mem_prs]=$((udp_max / page / 2))
+  NET[udp_mem_max]=$((udp_max / page))
+  
+  _ok "UDP 缓冲: 最大=$((udp_max/1024/1024))MB"
+  
+  # Backlog
+  local backlog=$((bw * 100))
+  [ "$backlog" -lt 10000 ] && backlog=10000
+  [ "$backlog" -gt 1000000 ] && backlog=1000000
+  NET[backlog]=$backlog
+  NET[budget]=$((backlog / 10))
+  
+  # Conntrack
+  local ct=$((SYS[mem_bytes] / 32768))
+  [ "$ct" -lt 65536 ] && ct=65536
+  [ "$ct" -gt 524288 ] && ct=524288
+  NET[conntrack]=$ct
+  
+  _ok "Backlog: $backlog, Conntrack: $ct"
+  
+  STATE[buffers_calculated]=1
+  save_state
+}
+
+# ============================================================
+# 第七阶段：地域运营商交互选择
+# ============================================================
+
+show_region_menu() {
+  clear
+  _section "选择探测点"
+  
+  echo ""
+  printf "\033[1;36m%-4s %-10s %-20s %-20s %-20s\033[0m\n" \
+    "ID" "地区" "${ISP_LABELS[0]}" "${ISP_LABELS[1]}" "${ISP_LABELS[2]}"
+  echo "────────────────────────────────────────────────────────────────────────"
+  
+  local idx=1
+  for region in $(printf "%s\n" "${!REGIONS_IPV4[@]}" | sort); do
+    read -r ip_cm ip_cu ip_ct <<< "${REGIONS_IPV4[$region]}"
+    printf "%-4s %-10s %-20s %-20s %-20s\n" "[$idx]" "$region" "$ip_cm" "$ip_cu" "$ip_ct"
+    idx=$((idx + 1))
+  done
+  
+  echo ""
+}
+
+select_and_probe_region() {
+  show_region_menu
+  
+  echo -n "请输入地区编号 (1-${#REGIONS_IPV4[@]}，0=取消): "
+  read -r region_id
+  
+  [ "$region_id" = "0" ] && return 0
+  
+  if ! is_valid_int "$region_id" || [ "$region_id" -gt "${#REGIONS_IPV4[@]}" ]; then
+    _warn "无效编号"
+    pause
+    return 1
+  fi
+  
+  mapfile -t sorted_regions < <(printf "%s\n" "${!REGIONS_IPV4[@]}" | sort)
+  local region="${sorted_regions[$((region_id - 1))]}"
+  
+  read -r ip_cm ip_cu ip_ct <<< "${REGIONS_IPV4[$region]}"
+  
+  echo ""
+  echo "地区: $region"
+  echo "1. ${ISP_LABELS[0]} ($ip_cm)"
+  echo "2. ${ISP_LABELS[1]} ($ip_cu)"
+  echo "3. ${ISP_LABELS[2]} ($ip_ct)"
+  echo "0. 取消"
+  echo ""
+  echo -n "请选择运营商 (0-3): "
+  read -r isp_id
+  
+  [ "$isp_id" = "0" ] && return 0
+  
+  if ! [[ "$isp_id" =~ ^[1-3]$ ]]; then
+    _warn "无效选择"
+    pause
+    return 1
+  fi
+  
+  local target_ip isp_name
+  case "$isp_id" in
+    1) target_ip="$ip_cm"; isp_name="${ISP_LABELS[0]}" ;;
+    2) target_ip="$ip_cu"; isp_name="${ISP_LABELS[1]}" ;;
+    3) target_ip="$ip_ct"; isp_name="${ISP_LABELS[2]}" ;;
+  esac
+  
+  STATE[selected_region]="$region"
+  STATE[selected_isp]="$isp_name"
+  STATE[selected_ip]="$target_ip"
+  
+  # 执行探测
+  _section "探测节点"
+  _log "目标: $region - $isp_name ($target_ip)"
+  
+  local rtt_ms=0
+  
+  # ICMP Ping
+  if ping -c 4 -W 2 "$target_ip" >"${TMP_DIR}/probe_ping" 2>&1; then
+    rtt_ms=$(grep -Eo 'time=[0-9.]+' "${TMP_DIR}/probe_ping" | \
+             awk -F= '{print $2}' | sort -n | awk 'NR==2{print; exit}')
+    _ok "ICMP Ping 成功: ${rtt_ms}ms"
+  else
+    _warn "ICMP Ping 失败，尝试 TCP 探测..."
+    
+    if has nc; then
+      local start=$(date +%s%3N)
+      if timeout 3 nc -zv "$target_ip" 80 >/dev/null 2>&1; then
+        local end=$(date +%s%3N)
+        rtt_ms=$((end - start))
+        _ok "TCP 探测成功: ${rtt_ms}ms"
+      else
+        rtt_ms=999
+        _warn "TCP 探测失败，使用默认值"
+      fi
+    else
+      rtt_ms=999
+      _warn "无探测工具，使用默认值"
+    fi
+  fi
+  
+  STATE[selected_rtt]="$rtt_ms"
+  save_state
+  
+  echo ""
+  _ok "════════════════════════════════════"
+  _ok "探测完成"
+  _ok "  地区: $region"
+  _ok "  运营商: $isp_name"
+  _ok "  IP: $target_ip"
+  _ok "  RTT: ${rtt_ms} ms"
+  _ok "════════════════════════════════════"
+  
+  pause
+}
+
+# ============================================================
+# 第八阶段：智能分析与推荐
+# ============================================================
+
+show_intelligent_analysis() {
+  _section "智能分析与优化建议"
+  
+  if [ "${STATE[system_detected]}" != "1" ]; then
+    _warn "请先检测系统信息（选项 2）"
+    pause
+    return 1
+  fi
+  
+  cat <<EOF
+
+╔══════════════════════════════════════════════════════════════╗
+║                    当前系统状态                                ║
+╚══════════════════════════════════════════════════════════════╝
+
+  🖥️  系统信息
+      • 内核: ${SYS[kernel]}
+      • CPU: ${SYS[cpu]} 核心
+      • 内存: ${SYS[mem_gb]} GB
+      • 虚拟化: ${SYS[virt]}
+      • 网卡: ${SYS[iface]} (${NIC[driver]})
+
+  🌐 网络信息
+      • 带宽: ${NET[bw]:-未检测} Mbps
+      • RTT: ${NET[rtt]:-未检测} ms
+      • BBR: ${NET[bbr_best]:-未检测}
+      • 当前模式: ${STATE[mode]}
+
+EOF
+
+  if [ -n "${STATE[selected_ip]}" ]; then
+    cat <<EOF
+  📍 探测点信息
+      • 地区: ${STATE[selected_region]}
+      • 运营商: ${STATE[selected_isp]}
+      • IP: ${STATE[selected_ip]}
+      • RTT: ${STATE[selected_rtt]} ms
+
+EOF
+  fi
+  
+  cat <<EOF
+╔══════════════════════════════════════════════════════════════╗
+║                 代理翻墙优化建议                               ║
+╚══════════════════════════════════════════════════════════════╝
+
+EOF
+
+  # RTT 分析
+  local rtt=${NET[rtt]:-50}
+  echo "  📊 延迟分析 (RTT: ${rtt}ms)"
+  
+  if [ "$rtt" -gt 150 ]; then
+    cat <<EOF
+      ⚠️  高延迟环境
+      ✓ 建议模式: latency
+      ✓ 关闭 GRO/LRO 减少聚合延迟
+      ✓ 降低 coalesce (rx-usecs=30)
+      ✓ 适合: Shadowsocks/V2Ray/Trojan
+EOF
+  elif [ "$rtt" -gt 80 ]; then
+    cat <<EOF
+      ℹ️  中等延迟环境
+      ✓ 建议模式: normal
+      ✓ 平衡延迟与吞吐
+      ✓ 适合大多数场景
+EOF
+  else
+    cat <<EOF
+      ✅ 低延迟环境
+      ✓ 建议模式: aggressive
+      ✓ 启用所有硬件加速
+      ✓ 适合高带宽流媒体
+EOF
+  fi
+  
+  echo ""
+  
+  # 带宽分析
+  local bw=${NET[bw]:-100}
+  echo "  📈 带宽分析 (${bw}Mbps)"
+  
+  if [ "$bw" -lt 100 ]; then
+    echo "      ⚠️  小带宽: 优化 TCP 窗口，避免 bufferbloat"
+  elif [ "$bw" -lt 500 ]; then
+    echo "      ℹ️  中等带宽: 平衡缓冲区，启用 RPS/XPS"
+  else
+    echo "      ✅ 高带宽: 增大缓冲区，考虑 XDP"
+  fi
+  
+  echo ""
+  
+  # BBR 分析
+  echo "  🚀 拥塞控制分析"
+  if [ "${NET[bbr_best]}" = "none" ]; then
+    cat <<EOF
+      ⚠️  未检测到 BBR
+      ✓ 强烈建议安装 XanMod 内核
+      ✓ BBR 可提升 10-40% 性能
+EOF
+  else
+    echo "      ✅ 已启用: ${NET[bbr_best]}"
+  fi
+  
+  echo ""
+  
+  cat <<EOF
+╔══════════════════════════════════════════════════════════════╗
+║                   推荐操作步骤                                 ║
+╚══════════════════════════════════════════════════════════════╝
+
+  1️⃣  探测目标地区 (选项 1)
+  2️⃣  根据 RTT 切换模式 (选项 5)
+  3️⃣  安装 XanMod 内核 (选项 4)
+  4️⃣  执行完整优化 (选项 10)
+  5️⃣  重启系统
+  6️⃣  验证效果 (选项 11)
+
+EOF
+
+  pause
+}
+
+# ============================================================
+# 第九阶段：系统优化执行
+# ============================================================
+
+apply_sysctl_optimization() {
+  _section "应用 Sysctl 优化"
+  
+  if [ "${STATE[buffers_calculated]}" != "1" ]; then
+    _warn "请先检测系统并计算参数（选项 2）"
+    return 1
+  fi
+  
+  local mode=${STATE[mode]}
+  local somax=131072
+  [ "$mode" = "aggressive" ] && somax=262144
+  
+  cat > "${TMP_DIR}/sysctl.conf" <<EOF
+# Proxy Optimizer Sysctl Config
+# Generated: $(date)
+# Mode: $mode | RTT: ${NET[rtt]}ms | BW: ${NET[bw]}Mbps
+
+# Congestion Control
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# Core Buffers
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.core.rmem_max = ${NET[tcp_rmem_max]}
+net.core.wmem_max = ${NET[tcp_wmem_max]}
+net.core.optmem_max = 524288
+
+# TCP Buffers
+net.ipv4.tcp_rmem = ${NET[tcp_rmem_min]} ${NET[tcp_rmem_def]} ${NET[tcp_rmem_max]}
+net.ipv4.tcp_wmem = ${NET[tcp_wmem_min]} ${NET[tcp_wmem_def]} ${NET[tcp_wmem_max]}
+
+# TCP Optimization
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_moderate_rcvbuf = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+net.core.somaxconn = $somax
+net.ipv4.tcp_max_syn_backlog = $somax
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 3
+
+# UDP Buffers
+net.ipv4.udp_rmem_min = ${NET[udp_rmem_min]}
+net.ipv4.udp_wmem_min = ${NET[udp_wmem_min]}
+net.ipv4.udp_mem = ${NET[udp_mem_min]} ${NET[udp_mem_prs]} ${NET[udp_mem_max]}
+
+# Network Device
+net.core.netdev_max_backlog = ${NET[backlog]}
+net.core.netdev_budget = ${NET[budget]}
+net.core.netdev_budget_usecs = 5000
+net.core.rps_sock_flow_entries = 65536
+
+# Port Range
+net.ipv4.ip_local_port_range = 10000 65535
+
+# IP Forwarding
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+
+# Conntrack
+net.netfilter.nf_conntrack_max = ${NET[conntrack]}
+net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+net.netfilter.nf_conntrack_udp_timeout = 60
+net.netfilter.nf_conntrack_tcp_be_liberal = 1
+net.netfilter.nf_conntrack_tcp_loose = 1
+
+# Memory
+vm.swappiness = 1
+vm.vfs_cache_pressure = 50
+vm.min_free_kbytes = 65536
+
+# File Descriptors
+fs.file-max = 2097152
+fs.nr_open = 2097152
+EOF
+
+  install -m 0644 "${TMP_DIR}/sysctl.conf" "$SYSCTL_FILE"
+  
+  _log "应用 sysctl 配置..."
+  local failed=0
+  
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "$line" ]] && continue
+    
+    if ! sysctl -w "$line" >/dev/null 2>&1; then
+      _debug "失败: $line"
+      failed=$((failed + 1))
+    fi
+  done < "$SYSCTL_FILE"
+  
+  if [ "$failed" -gt 0 ]; then
+    _warn "有 $failed 项配置未生效（可能需要重启）"
+  else
+    _ok "Sysctl 配置全部应用成功"
+  fi
+  
+  STATE[optimization_applied]=1
+  save_state
+}
+
+optimize_network_card() {
+  _section "网卡硬件优化"
+  
+  if [ "${STATE[system_detected]}" != "1" ]; then
+    _warn "请先检测系统信息"
+    return 1
+  fi
+  
+  local iface="${SYS[iface]}"
+  local mode="${STATE[mode]}"
+  
+  # Ring Buffer
+  if is_valid_int "${NIC[rx_max]}" && is_valid_int "${NIC[tx_max]}"; then
+    if [ "${NIC[rx_max]}" -gt 512 ] && [ "${NIC[tx_max]}" -gt 512 ]; then
+      local rx=$((NIC[rx_max] * 75 / 100))
+      local tx=$((NIC[tx_max] * 75 / 100))
+      [ "$rx" -lt 512 ] && rx=512
+      [ "$tx" -lt 512 ] && tx=512
+      
+      if safe_run "ethtool -G '$iface' rx $rx tx $tx"; then
+        _ok "Ring Buffer: RX=$rx TX=$tx"
+      fi
+    fi
+  fi
+  
+  # Offload
+  safe_run "ethtool -K '$iface' tso on gso on sg on"
+  
+  # VirtIO 优化
+  if [[ "${SYS[virt]}" == *"kvm"* ]] || [[ "${NIC[driver]}" == *"virtio"* ]]; then
+    _log "应用 VirtIO 优化..."
+    safe_run "ethtool -K '$iface' tx-nocache-copy off"
+    safe_run "ethtool -K '$iface' tx-checksum-ipv4 on"
+  fi
+  
+  # GRO
+  if [ "$mode" = "latency" ]; then
+    safe_run "ethtool -K '$iface' gro off lro off"
+    _ok "已关闭 GRO/LRO (latency模式)"
+  else
+    safe_run "ethtool -K '$iface' gro on"
+    safe_run "ethtool -K '$iface' rx-gro-list on"
+    safe_run "ethtool -K '$iface' rx-udp-gro-forwarding on"
+    _ok "已启用 GRO"
+  fi
+  
+  # Coalesce
+  local rx_usecs rx_frames
+  case "$mode" in
+    latency) rx_usecs=30; rx_frames=16 ;;
+    aggressive) rx_usecs=100; rx_frames=64 ;;
+    *) rx_usecs=200; rx_frames=128 ;;
+  esac
+  
+  if safe_run "ethtool -C '$iface' rx-usecs $rx_usecs rx-frames $rx_frames adaptive-rx off"; then
+    _ok "Coalesce: rx-usecs=$rx_usecs"
+  fi
+  
+  # Queues
+  local desired=${SYS[cpu]}
+  [ "$desired" -gt 32 ] && desired=32
+  
+  if is_valid_int "${NIC[queues]}" && [ "$desired" -gt "${NIC[queues]}" ]; then
+    desired=${NIC[queues]}
+  fi
+  
+  safe_run "ethtool -L '$iface' combined $desired"
+  _ok "队列数: $desired"
+}
+
+optimize_irq_rps_xps() {
+  _section "IRQ/RPS/XPS 优化"
+  
+  if [ "${STATE[system_detected]}" != "1" ]; then
+    _warn "请先检测系统信息"
+    return 1
+  fi
+  
+  local iface="${SYS[iface]}"
+  local mask=$(cpu_mask_hex "${SYS[cpu]}")
+  local qdir="/sys/class/net/$iface/queues"
+  
+  [ ! -d "$qdir" ] && { _warn "队列目录不存在"; return 1; }
+  
+  # RPS
+  local rps_cnt=0
+  for rxq in "$qdir"/rx-*; do
+    [ ! -e "$rxq/rps_cpus" ] && continue
+    echo "$mask" > "$rxq/rps_cpus" 2>/dev/null && rps_cnt=$((rps_cnt+1))
+    echo 4096 > "$rxq/rps_flow_cnt" 2>/dev/null
+  done
+  [ "$rps_cnt" -gt 0 ] && _ok "RPS: $rps_cnt 个队列"
+  
+  # XPS
+  local tx_idx=0 xps_cnt=0
+  for txq in "$qdir"/tx-*; do
+    [ ! -e "$txq/xps_cpus" ] && continue
+    local cpu_idx=$((tx_idx % SYS[cpu]))
+    local single=$(printf '%x' $((1<<cpu_idx)))
+    echo "$single" > "$txq/xps_cpus" 2>/dev/null && xps_cnt=$((xps_cnt+1))
+    tx_idx=$((tx_idx+1))
+  done
+  [ "$xps_cnt" -gt 0 ] && _ok "XPS: $xps_cnt 个队列"
+}
+
+optimize_conntrack() {
+  _section "Conntrack 优化"
+  
+  [ "${STATE[buffers_calculated]}" != "1" ] && { _warn "请先计算参数"; return 1; }
+  
+  local ct=${NET[conntrack]}
+  sysctl -w net.netfilter.nf_conntrack_max=$ct >/dev/null 2>&1
+  
+  local hash=$((ct / 4))
+  if [ -w /sys/module/nf_conntrack/parameters/hashsize ]; then
+    echo "$hash" > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null
+    _ok "Conntrack: max=$ct hashsize=$hash"
+  fi
+  
+  sysctl -w net.netfilter.nf_conntrack_tcp_be_liberal=1 >/dev/null 2>&1
+  sysctl -w net.netfilter.nf_conntrack_tcp_loose=1 >/dev/null 2>&1
+}
+
+optimize_cpu() {
+  _section "CPU 优化"
+  
+  if has cpupower; then
+    safe_run "cpupower frequency-set -g performance"
+    _ok "CPU 频率: performance"
+  fi
+  
+  if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
+    echo madvise > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
+    echo defer > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null
+    _ok "透明大页: madvise"
+  fi
+}
+
+# ============================================================
+# 第十阶段：内核安装（修复重复安装问题）
+# ============================================================
+
+check_current_kernel() {
+  local current=$(uname -r)
+  
+  if [[ "$current" == *"xanmod"* ]]; then
+    echo "xanmod"
+  elif [[ "$current" == *"bbr"* ]] || dpkg -l | grep -q "joeyblog"; then
+    echo "bbr3"
+  else
+    echo "stock"
+  fi
+}
+
+install_xanmod_kernel() {
+  _section "安装 XanMod 内核"
+  
+  local current_type=$(check_current_kernel)
+  
+  if [ "$current_type" = "xanmod" ]; then
+    _ok "已安装 XanMod 内核"
+    echo "当前内核: $(uname -r)"
+    echo ""
+    echo "是否重新安装? (y/N): "
+    read -r confirm
+    [[ "${confirm,,}" != "y" ]] && return 0
+  fi
+  
+  _log "添加 XanMod 仓库..."
+  
+  if ! safe_run "curl -fsSL https://dl.xanmod.org/archive.key | gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg"; then
+    _warn "无法添加 XanMod 密钥"
+    install_bbr3_kernel
+    return
+  fi
+  
+  echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' \
+    > /etc/apt/sources.list.d/xanmod.list
+  
+  _log "更新软件源..."
+  if ! safe_run "apt-get update -qq"; then
+    _warn "软件源更新失败"
+    install_bbr3_kernel
+    return
+  fi
+  
+  _log "安装 XanMod 内核..."
+  if safe_run "apt-get install -y -qq linux-xanmod"; then
+    _ok "XanMod 安装成功"
+    echo ""
+    echo "⚠️  请重启系统以使用新内核"
+    echo ""
+  else
+    _warn "XanMod 安装失败，尝试 BBR v3..."
+    install_bbr3_kernel
+  fi
+  
+  pause
+}
+
+install_bbr3_kernel() {
+  _section "安装 BBR v3 内核"
+  
+  local current_type=$(check_current_kernel)
+  
+  if [ "$current_type" = "bbr3" ]; then
+    _ok "已安装 BBR v3 内核"
+    echo "当前内核: $(uname -r)"
+    echo ""
+    echo "是否重新安装? (y/N): "
+    read -r confirm
+    [[ "${confirm,,}" != "y" ]] && { pause; return 0; }
+  fi
+  
+  local arch=$(uname -m)
+  local arch_filter
+  
+  case "$arch" in
+    x86_64) arch_filter="x86_64" ;;
+    aarch64) arch_filter="arm64" ;;
+    *) _err "不支持的架构: $arch" ;;
+  esac
+  
+  _log "从 GitHub 获取 BBR v3..."
+  local api_url="https://api.github.com/repos/byJoey/Actions-bbr-v3/releases"
+  
+  local release_data
+  if ! release_data=$(curl -sL "$api_url" 2>/dev/null); then
+    _err "无法访问 GitHub API"
+  fi
+  
+  local latest_tag
+  latest_tag=$(echo "$release_data" | \
+    jq -r --arg filter "$arch_filter" \
+    'map(select(.tag_name | test($filter; "i"))) | sort_by(.published_at) | .[-1].tag_name' 2>/dev/null)
+  
+  [ -z "$latest_tag" ] || [ "$latest_tag" = "null" ] && { _err "未找到适配版本"; }
+  
+  _ok "找到版本: $latest_tag"
+  
+  local asset_urls
+  asset_urls=$(echo "$release_data" | \
+    jq -r --arg tag "$latest_tag" \
+    '.[] | select(.tag_name == $tag) | .assets[].browser_download_url')
+  
+  rm -f /tmp/linux-*.deb
+  
+  _log "下载内核包..."
+  for url in $asset_urls; do
+    wget -q --show-progress "$url" -P /tmp/ || _warn "下载失败: $url"
+  done
+  
+  [ ! -f /tmp/linux-*.deb ] && { _err "下载失败"; }
+  
+  # 仅在重新安装时才卸载
+  if [ "$current_type" = "bbr3" ]; then
+    _log "卸载旧版本..."
+    local old_pkgs=$(dpkg -l | grep "joeyblog" | awk '{print $2}' | tr '\n' ' ')
+    [ -n "$old_pkgs" ] && safe_run "apt-get remove --purge -y $old_pkgs"
+  fi
+  
+  _log "安装 BBR v3..."
+  safe_run "dpkg -i /tmp/linux-*.deb"
+  safe_run "apt-get install -f -y"
+  
+  has update-grub && safe_run "update-grub"
+  
+  _ok "BBR v3 安装完成"
+  echo ""
+  echo "⚠️  请重启系统"
+  echo ""
+  pause
+}
+
+# ============================================================
+# 第十一阶段：监控与健康检查
+# ============================================================
+
+install_monitoring() {
+  _section "安装监控服务"
+  
+  [ "${STATE[system_detected]}" != "1" ] && { _warn "请先检测系统"; return 1; }
+  
+  cat > "${TMP_DIR}/monitor.sh" <<'MONITOR'
+#!/usr/bin/env bash
+set -euo pipefail
+
+IFACE="__IFACE__"
+LOG="/var/log/proxy-ultimate-monitor.log"
+INTERVAL=15
+
+log() { echo "[$(date +'%F %T')] $*" >> "$LOG"; }
+
+while true; do
+  sleep "$INTERVAL"
+  
+  # 采集指标
+  rx_pkts=$(cat /sys/class/net/$IFACE/statistics/rx_packets 2>/dev/null || echo 0)
+  tx_pkts=$(cat /sys/class/net/$IFACE/statistics/tx_packets 2>/dev/null || echo 0)
+  
+  # Prometheus metrics
+  mkdir -p /var/lib/node_exporter/textfile_collector 2>/dev/null || true
+  {
+    echo "# TYPE proxy_rx_packets counter"
+    echo "proxy_rx_packets $rx_pkts"
+    echo "# TYPE proxy_tx_packets counter"
+    echo "proxy_tx_packets $tx_pkts"
+  } > /var/lib/node_exporter/textfile_collector/proxy_opt.prom
+  
+  log "Stats: RX=$rx_pkts TX=$tx_pkts"
+done
+MONITOR
+
+  sed -i "s|__IFACE__|${SYS[iface]}|g" "${TMP_DIR}/monitor.sh"
+  install -m 0755 "${TMP_DIR}/monitor.sh" "$MONITOR_SCRIPT"
+  
+  cat > "${TMP_DIR}/monitor.service" <<SERVICE
+[Unit]
+Description=Proxy Network Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$MONITOR_SCRIPT
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+  install -m 0644 "${TMP_DIR}/monitor.service" "$MONITOR_SERVICE"
+  systemctl daemon-reload
+  systemctl enable --now proxy-ultimate-monitor.service
+  
+  _ok "监控服务已安装并启动"
+}
+
+install_health_check() {
+  _section "安装健康检查"
+  
+  [ "${STATE[system_detected]}" != "1" ] && { _warn "请先检测系统"; return 1; }
+  
+  cat > "${TMP_DIR}/health.sh" <<'HEALTH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+iface="__IFACE__"
+
+# Check BBR
+cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "")
+if ! echo "$cc" | grep -qw "bbr"; then
+  echo "❌ BBR 未启用: $cc" >&2
+  exit 1
+fi
+
+# Check buffers
+rmem=$(sysctl -n net.core.rmem_max 2>/dev/null || echo 0)
+if [ "$rmem" -lt 65536 ]; then
+  echo "❌ 缓冲区过小: $rmem" >&2
+  exit 1
+fi
+
+echo "✅ 健康检查通过"
+exit 0
+HEALTH
+
+  sed -i "s|__IFACE__|${SYS[iface]}|g" "${TMP_DIR}/health.sh"
+  install -m 0755 "${TMP_DIR}/health.sh" "$HEALTH_SCRIPT"
+  
+  _ok "健康检查脚本已安装: $HEALTH_SCRIPT"
+}
+
+run_health_check() {
+  _section "执行健康检查"
+  
+  if [ ! -x "$HEALTH_SCRIPT" ]; then
+    _warn "请先安装健康检查（选项 12）"
+    return 1
+  fi
+  
+  if "$HEALTH_SCRIPT"; then
+    _ok "健康检查通过"
+  else
+    _warn "健康检查失败"
+  fi
+  
+  pause
+}
+
+# ============================================================
+# 第十二阶段：完整优化流程
+# ============================================================
+
+run_full_optimization() {
+  _section "完整优化流程"
+  
+  cat <<EOF
+
+即将执行：
+  1. 检测系统信息
+  2. 检测网络参数（保留已设置值）
+  3. 计算缓冲区
+  4. 应用 Sysctl
+  5. 优化网卡
+  6. 优化 IRQ/RPS/XPS
+  7. 优化 Conntrack
+  8. 优化 CPU
+  9. 安装监控
+ 10. 安装健康检查
+
+当前设置将被保留：
+  • RTT: ${STATE[force_rtt]:-${STATE[selected_rtt]:-自动检测}}
+  • 带宽: ${STATE[force_bw]:-自动检测}
+  • 模式: ${STATE[mode]}
+
+EOF
+
+  echo -n "继续? (y/N): "
+  read -r confirm
+  [[ "${confirm,,}" != "y" ]] && return 0
+  
+  # 步骤 1-3
+  detect_system_info
+  detect_network_params
+  calculate_buffers
+  
+  # 步骤 4-8
+  apply_sysctl_optimization
+  optimize_network_card
+  optimize_irq_rps_xps
+  optimize_conntrack
+  optimize_cpu
+  
+  # 步骤 9-10
+  install_monitoring
+  install_health_check
+  
+  _section "优化完成"
+  
+  cat <<EOF
+
+╔══#!/usr/bin/env bash
+# ============================================================
+# 代理翻墙网络终极优化脚本 v3.0 (生产级)
+# 作者：专为代理服务器优化设计
+# 架构：模块化 + 状态持久化 + 完整错误处理
+# 执行：自上而下 - 检查→定义→交互→执行
+# ============================================================
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# ============================================================
+# 第一阶段：全局常量与路径定义
+# ============================================================
+
+readonly VERSION="3.0-production"
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# 工作目录
+readonly TMP_DIR="/tmp/proxy-opt-$$"
+readonly STATE_DIR="/var/lib/proxy-optimizer"
+readonly STATE_FILE="${STATE_DIR}/state.conf"
+readonly LOCK_FILE="/var/lock/proxy-optimizer.lock"
+
+# 配置文件路径
+readonly SYSCTL_FILE="/etc/sysctl.d/99-proxy-ultimate.conf"
+readonly MONITOR_SCRIPT="/usr/local/bin/proxy-ultimate-monitor.sh"
+readonly MONITOR_SERVICE="/etc/systemd/system/proxy-ultimate-monitor.service"
+readonly HEALTH_SCRIPT="/usr/local/bin/proxy-probe-health.sh"
+readonly LOGROTATE_FILE="/etc/logrotate.d/proxy-ultimate-monitor"
+
+# 日志文件
+readonly LOG_FILE="/var/log/proxy-optimizer.log"
+
+# 清理函数
+cleanup() {
+  rm -rf "$TMP_DIR"
+  rm -f "$LOCK_FILE"
+}
+trap cleanup EXIT INT TERM
+
+# 创建必要目录
+mkdir -p "$TMP_DIR" "$STATE_DIR"
+
+# ============================================================
+# 第二阶段：日志与工具函数定义
+# ============================================================
+
+# 日志函数
+log() {
+  local level="$1"
+  shift
+  local msg="$*"
+  local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  echo "[$timestamp] [$level] $msg" | tee -a "$LOG_FILE"
+}
+
+_log() { 
+  printf "\033[36m[%s]\033[0m %s\n" "$(date +%T)" "$*"
+  log "INFO" "$*"
+}
+
+_ok() { 
+  printf "\033[32m[✓]\033[0m %s\n" "$*"
+  log "OK" "$*"
+}
+
+_warn() { 
+  printf "\033[33m[!]\033[0m %s\n" "$*" >&2
+  log "WARN" "$*"
+}
+
+_err() { 
+  printf "\033[31m[✗]\033[0m %s\n" "$*" >&2
+  log "ERROR" "$*"
+  exit 1
+}
+
+_section() { 
+  printf "\n\033[1;35m╔══════════════════════════════════════════╗\033[0m\n"
+  printf "\033[1;35m║  %-38s║\033[0m\n" "$*"
+  printf "\033[1;35m╚══════════════════════════════════════════╝\033[0m\n"
+  log "SECTION" "$*"
+}
+
+_debug() {
+  if [ "${DEBUG:-0}" = "1" ]; then
+    printf "\033[90m[DEBUG] %s\033[0m\n" "$*" >&2
+    log "DEBUG" "$*"
+  fi
+}
+
+# 工具函数
+has() { command -v "$1" >/dev/null 2>&1; }
+
+to_int() {
+  local v="${1:-0}"
+  v="${v//[^0-9]/}"
+  if [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge 0 ]; then
+    echo "$v"
+  else
+    echo "0"
+  fi
+}
+
+is_valid_int() {
+  local v="$1"
+  [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ] 2>/dev/null
+}
+
+safe_run() {
+  _debug "执行命令: $*"
+  if eval "$@" 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+    return 0
+  else
+    _debug "命令失败: $*"
+    return 1
+  fi
+}
+
+pause() {
+  echo ""
+  echo "按回车键继续..."
+  read -r
+}
+
+# CPU 掩码生成
+cpu_mask_hex() {
+  local n=$(to_int "$1")
+  [ "$n" -le 0 ] && echo "1" && return
+  [ "$n" -ge 64 ] && echo "ffffffffffffffff" && return
+  
+  if [ "$n" -lt 61 ]; then
+    printf '%x' $(( (1 << n) - 1 ))
+  elif has python3; then
+    python3 -c "n=$n; print(format((1<<n)-1,'x'))" 2>/dev/null || echo "ffffffffffffffff"
+  else
+    echo "ffffffffffffffff"
+  fi
+}
+
+# ============================================================
+# 第三阶段：状态管理系统
+# ============================================================
+
+# 默认状态
+declare -A STATE=(
+  [mode]="aggressive"
+  [force_rtt]=""
+  [force_bw]=""
+  [selected_region]=""
+  [selected_isp]=""
+  [selected_ip]=""
+  [selected_rtt]=""
+  [system_detected]="0"
+  [network_detected]="0"
+  [buffers_calculated]="0"
+  [optimization_applied]="0"
+)
+
+declare -A SYS=()
+declare -A NET=()
+declare -A NIC=()
+
+# 保存状态（安全写入）
+save_state() {
+  local tmp_file="${STATE_FILE}.tmp"
+  
+  cat > "$tmp_file" <<EOF
+# Proxy Optimizer State File
+# Generated: $(date)
+# Version: $VERSION
+
+# User Settings
+MODE="${STATE[mode]}"
+FORCE_RTT="${STATE[force_rtt]}"
+FORCE_BW="${STATE[force_bw]}"
+
+# Probe Results
+SELECTED_REGION="${STATE[selected_region]}"
+SELECTED_ISP="${STATE[selected_isp]}"
+SELECTED_IP="${STATE[selected_ip]}"
+SELECTED_RTT="${STATE[selected_rtt]}"
+
+# Status Flags
+SYSTEM_DETECTED="${STATE[system_detected]}"
+NETWORK_DETECTED="${STATE[network_detected]}"
+BUFFERS_CALCULATED="${STATE[buffers_calculated]}"
+OPTIMIZATION_APPLIED="${STATE[optimization_applied]}"
+
+# System Info (if detected)
+EOF
+
+  # 安全序列化关联数组
+  if [ "${STATE[system_detected]}" = "1" ]; then
+    {
+      echo "# SYS Array"
+      for key in "${!SYS[@]}"; do
+        printf "SYS[%s]=%q\n" "$key" "${SYS[$key]}"
+      done
+      
+      echo "# NET Array"
+      for key in "${!NET[@]}"; do
+        printf "NET[%s]=%q\n" "$key" "${NET[$key]}"
+      done
+      
+      echo "# NIC Array"
+      for key in "${!NIC[@]}"; do
+        printf "NIC[%s]=%q\n" "$key" "${NIC[$key]}"
+      done
+    } >> "$tmp_file"
+  fi
+  
+  # 原子替换
+  mv -f "$tmp_file" "$STATE_FILE"
+  chmod 600 "$STATE_FILE"
+  _debug "状态已保存到 $STATE_FILE"
+}
+
+# 加载状态（安全读取）
+load_state() {
+  if [ ! -f "$STATE_FILE" ]; then
+    _debug "状态文件不存在，使用默认值"
+    return 0
+  fi
+  
+  _debug "加载状态文件: $STATE_FILE"
+  
+  # 安全加载
+  if ! source "$STATE_FILE" 2>/dev/null; then
+    _warn "状态文件损坏，已重置"
+    rm -f "$STATE_FILE"
+    return 1
+  fi
+  
+  # 更新 STATE 数组
+  STATE[mode]="${MODE:-aggressive}"
+  STATE[force_rtt]="${FORCE_RTT:-}"
+  STATE[force_bw]="${FORCE_BW:-}"
+  STATE[selected_region]="${SELECTED_REGION:-}"
+  STATE[selected_isp]="${SELECTED_ISP:-}"
+  STATE[selected_ip]="${SELECTED_IP:-}"
+  STATE[selected_rtt]="${SELECTED_RTT:-}"
+  STATE[system_detected]="${SYSTEM_DETECTED:-0}"
+  STATE[network_detected]="${NETWORK_DETECTED:-0}"
+  STATE[buffers_calculated]="${BUFFERS_CALCULATED:-0}"
+  STATE[optimization_applied]="${OPTIMIZATION_APPLIED:-0}"
+  
+  _debug "状态加载完成"
+}
+
+# ============================================================
+# 第四阶段：地域运营商数据定义
+# ============================================================
+
+declare -A REGIONS_IPV4=(
+  ["上海"]="183.193.195.52 140.207.236.211 61.170.80.224"
+  ["北京"]="111.132.33.234 123.126.74.241 220.181.141.62"
+  ["广东"]="183.240.215.141 122.13.173.213 14.116.174.67"
+  ["江苏"]="36.150.72.122 218.98.46.62 221.229.203.57"
+  ["浙江"]="112.13.210.86 124.160.144.214 122.228.6.140"
+  ["四川"]="112.45.29.107 119.6.226.87 182.140.222.120"
+  ["湖北"]="111.48.204.91 122.188.1.46 171.43.200.232"
+  ["湖南"]="111.22.253.121 61.240.220.8 113.219.200.211"
+  ["河南"]="111.7.88.239 123.6.6.95 36.99.32.68"
+  ["河北"]="111.62.129.51 221.195.63.207 124.238.112.166"
+  ["山东"]="120.220.200.235 116.196.134.235 140.249.226.28"
+  ["福建"]="183.253.58.91 36.248.50.117 125.77.141.147"
+  ["安徽"]="112.29.208.234 211.91.68.233 117.66.50.79"
+  ["江西"]="117.163.60.130 116.153.79.107 106.225.224.168"
+  ["重庆"]="221.178.37.53 113.207.38.107 219.153.156.15"
+  ["陕西"]="36.163.206.252 124.89.110.205 113.141.190.13"
+  ["云南"]="36.147.59.95 180.130.96.87 182.242.90.222"
+  ["贵州"]="117.187.205.58 220.197.201.184 119.0.107.88"
+  ["山西"]="183.201.217.212 221.204.69.240 1.71.88.66"
+  ["甘肃"]="36.142.6.184 116.176.95.38 118.183.154.36"
+  ["辽宁"]="36.131.173.23 218.61.192.237 42.202.220.14"
+  ["吉林"]="36.135.15.29 139.215.162.53 36.104.134.91"
+  ["黑龙江"]="111.42.114.74 1.189.232.55 42.185.157.195"
+  ["内蒙古"]="117.161.74.9 116.136.37.50 36.102.211.14"
+  ["广西"]="36.159.112.50 121.31.230.218 222.216.123.115"
+  ["海南"]="111.29.14.183 113.59.44.60 124.225.127.237"
+  ["天津"]="111.32.184.158 220.194.123.111 42.81.179.153"
+  ["宁夏"]="111.51.158.194 42.63.65.85 222.75.63.58"
+  ["新疆"]="36.189.11.227 116.178.75.25 110.157.250.207"
+  ["西藏"]="117.180.226.125 116.172.148.16 113.62.123.11"
+  ["青海"]="111.12.213.165 139.170.154.39 223.221.179.79"
+)
+
+readonly ISP_LABELS=("移动" "联通" "电信")
+
+# ============================================================
+# 第五阶段：依赖检查与环境准备
+# ============================================================
+
+check_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    _err "必须使用 root 用户执行此脚本"
+  fi
+}
+
+check_lock() {
+  if [ -f "$LOCK_FILE" ]; then
+    local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      _err "脚本已在运行 (PID: $pid)"
+    else
+      rm -f "$LOCK_FILE"
+    fi
+  fi
+  echo $$ > "$LOCK_FILE"
+}
+
+check_system_type() {
+  if ! has apt-get; then
+    _err "仅支持 Debian/Ubuntu 系统"
+  fi
+  
+  if [ -f /etc/os-release ]; then
+    source /etc/os-release
+    _ok "系统: ${NAME:-Unknown} ${VERSION:-Unknown}"
+  fi
+}
+
+# 完善的依赖检查（修复假报错）
+install_dependencies() {
+  _section "检查并安装依赖"
+  
+  local required_packages=(
+    curl
+    wget
+    jq
+    ethtool
+    bc
+    gnupg
+    lsb-release
+    ca-certificates
+    net-tools
+    sysstat
+    iperf3
+  )
+  
+  local missing_packages=()
+  
+  _log "检查已安装的包..."
+  for pkg in "${required_packages[@]}"; do
+    # 使用 dpkg-query 精确检查
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+      missing_packages+=("$pkg")
+      _debug "缺少包: $pkg"
+    fi
+  done
+  
+  if [ ${#missing_packages[@]} -eq 0 ]; then
+    _ok "所有依赖已安装"
+    return 0
+  fi
+  
+  _log "需要安装 ${#missing_packages[@]} 个包: ${missing_packages[*]}"
+  
+  # 更新软件源
+  _log "更新软件源（可能需要几分钟）..."
+  if ! safe_run "apt-get update -qq"; then
+    _warn "软件源更新失败，但将继续尝试安装"
+  fi
+  
+  # 安装缺失的包
+  _log "安装依赖包..."
+  export DEBIAN_FRONTEND=noninteractive
+  
+  if safe_run "apt-get install -y -qq ${missing_packages[*]} --no-install-recommends"; then
+    _ok "依赖安装完成"
+  else
+    _warn "部分依赖安装失败，某些功能可能受限"
+  fi
+}
+
+# ============================================================
+# 第六阶段：系统信息检测
+# ============================================================
+
+detect_system_info() {
+  _section "系统信息检测"
+  
+  # 基础信息
+  SYS[kernel]=$(uname -r)
+  SYS[cpu]=$(nproc)
+  SYS[mem_kb]=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+  SYS[mem_bytes]=$((SYS[mem_kb] * 1024))
+  SYS[mem_gb]=$(awk -v b="${SYS[mem_bytes]}" 'BEGIN{printf "%.1f", b/1024/1024/1024}')
+  
+  # 虚拟化检测
+  if has systemd-detect-virt; then
+    SYS[virt]=$(systemd-detect-virt 2>/dev/null || echo "unknown")
+  else
+    SYS[virt]="unknown"
+  fi
+  
+  # NUMA
+  SYS[numa_nodes]=$(lscpu 2>/dev/null | awk '/^NUMA node\(s\):/ {print $NF}' || echo 1)
+  
+  # 网卡检测
+  SYS[iface]=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
+  
+  if [ -z "${SYS[iface]}" ]; then
+    SYS[iface]=$(ip -o link show | awk -F': ' '$2!~/lo|virbr|docker|veth/ {print $2; exit}')
+  fi
+  
+  if [ -z "${SYS[iface]}" ]; then
+    _err "无法检测主网卡接口"
+  fi
+  
+  # 网卡详情（安全读取）
+  local iface="${SYS[iface]}"
+  NIC[driver]=$(ethtool -i "$iface" 2>/dev/null | awk '/driver:/ {print $2}' || echo "unknown")
+  NIC[queues]=$(ethtool -l "$iface" 2>/dev/null | awk '/Combined:/ {print $2; exit}' || echo "1")
+  
+  # Ring Buffer（安全读取，防止报错）
+  local rx_output=$(ethtool -g "$iface" 2>/dev/null)
+  if [ -n "$rx_output" ]; then
+    NIC[rx_max]=$(echo "$rx_output" | awk '/^RX:/{getline; if($1 ~ /^[0-9]+$/) print $1; else print 0}' || echo 0)
+    NIC[tx_max]=$(echo "$rx_output" | awk '/^TX:/{getline; if($1 ~ /^[0-9]+$/) print $1; else print 0}' || echo 0)
+  else
+    NIC[rx_max]=0
+    NIC[tx_max]=0
+  fi
+  
+  # 确保是数字
+  NIC[rx_max]=$(to_int "${NIC[rx_max]}")
+  NIC[tx_max]=$(to_int "${NIC[tx_max]}")
+  
+  NIC[numa]=$(cat "/sys/class/net/$iface/device/numa_node" 2>/dev/null || echo "-1")
+  
+  # 更新状态
+  STATE[system_detected]=1
+  save_state
+  
+  _ok "内核: ${SYS[kernel]}"
+  _ok "CPU: ${SYS[cpu]} 核心"
+  _ok "内存: ${SYS[mem_gb]} GB"
+  _ok "网卡: ${iface} (驱动: ${NIC[driver]})"
+  _ok "虚拟化: ${SYS[virt]}"
+}
+
+detect_network_params() {
+  _section "网络参数检测"
+  
+  # RTT 检测逻辑（优先级）
+  local rtt_source="auto"
+  
+  if [ -n "${STATE[force_rtt]}" ] && [ "${STATE[force_rtt]}" != "0" ]; then
+    NET[rtt]="${STATE[force_rtt]}"
+    rtt_source="manual"
+  elif [ -n "${STATE[selected_rtt]}" ] && [ "${STATE[selected_rtt]}" != "0" ]; then
+    NET[rtt]="${STATE[selected_rtt]}"
+    rtt_source="probe"
+  else
+    # 自动检测
+    _log "向多个 DNS 发送 ping 检测 RTT..."
+    
+    declare -A targets=(["1.1.1.1"]=5 ["8.8.8.8"]=3 ["9.9.9.9"]=2)
+    local total_weighted=0 total_weight=0
+    
+    for target in "${!targets[@]}"; do
+      local weight=${targets[$target]}
+      if ping -c 4 -W 2 -i 0.2 "$target" >"${TMP_DIR}/ping_${target//./}" 2>/dev/null; then
+        local median=$(grep -Eo 'time=[0-9.]+' "${TMP_DIR}/ping_${target//./}" | \
+                       awk -F= '{print $2}' | sort -n | awk 'NR==2{print; exit}')
+        
+        if [ -n "$median" ]; then
+          total_weighted=$(awk -v a="$total_weighted" -v m="$median" -v w="$weight" \
+                           'BEGIN{printf "%.2f", a + m*w}')
+          total_weight=$((total_weight + weight))
+          _log "  $target: ${median}ms"
+        fi
+      fi
+    done
+    
+    if [ "$total_weight" -gt 0 ]; then
+      NET[rtt]=$(awk -v a="$total_weighted" -v w="$total_weight" 'BEGIN{printf "%.0f", a/w}')
+    else
+      NET[rtt]=50
+      _warn "RTT 检测失败，使用默认值"
+    fi
+  fi
+  
+  _ok "RTT: ${NET[rtt]} ms (来源: $rtt_source)"
+  
+  # 带宽检测
+  local bw_source="auto"
+  
+  if [ -n "${STATE[force_bw]}" ] && [ "${STATE[force_bw]}" != "0" ]; then
+    NET[bw]="${STATE[force_bw]}"
+    bw_source="manual"
+  else
+    local link_speed=$(ethtool "${SYS[iface]}" 2>/dev/null | \
+                       awk '/Speed:/ {print $2}' | tr -cd '0-9')
+    
+    if [ -n "$link_speed" ] && [ "$link_speed" -gt 0 ]; then
+      NET[bw]="$link_speed"
+    else
+      # 估算
+      local cpu_bw=$((SYS[cpu] * 500))
+      local mem_bw=$(awk -v m="${SYS[mem_gb]}" 'BEGIN{printf "%.0f", m*400}')
+      NET[bw]=$(( (cpu_bw < mem_bw ? cpu_bw : mem_bw) * 80 / 100 ))
+      [ "${NET[bw]}" -lt 10 ] && NET[bw]=10
+    fi
+  fi
+  
+  _ok "带宽: ${NET[bw]} Mbps (来源: $bw_source)"
+  
+  # BBR 检测
+  local avail_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "")
+  NET[avail_cc]="$avail_cc"
+  
+  local best_bbr="none"
+  for mod in tcp_bbr3 tcp_bbrv2 tcp_bbr2 tcp_bbr; do
+    if grep -qw "$mod" /proc/modules 2>/dev/null || echo "$avail_cc" | grep -qw "${mod#tcp_}"; then
+      best_bbr="$mod"
+      break
+    fi
+  done
+  NET[bbr_best]="$best_bbr"
+  
+  _ok "BBR: $best_bbr"
+  
+  STATE[network_detected]=1
+  save_state
+}
+
+calculate_buffers() {
+  _section "计算缓冲区参数"
+  
+  if [ "${STATE[network_detected]}" != "1" ]; then
+    _warn "请先检测网络参数"
+    return 1
+  fi
+  
+  local bw=${NET[bw]}
+  local rtt=${NET[rtt]}
+  local mode=${STATE[mode]}
+  
+  # BDP
+  local bdp=$(awk -v bw="$bw" -v rtt="$rtt" 'BEGIN{printf "%.0f", bw*125*rtt}')
+  NET[bdp]=$bdp
+  NET[bdp_mb]=$(awk -v b="$bdp" 'BEGIN{printf "%.2f", b/1024/1024}')
+  
+  _log "BDP: ${bdp} bytes (${NET[bdp_mb]} MB)"
+  
+  # 内存限制
+  local mem15=$((SYS[mem_bytes] * 15 / 100))
+  local mem10=$((SYS[mem_bytes] * 10 / 100))
+  
+  # 模式倍数
+  local mult=3
+  case "$mode" in
+    aggressive) mult=4 ;;
+    latency) mult=2 ;;
+  esac
+  
+  # TCP
+  local tcp_max=$((bdp * mult))
+  [ "$tcp_max" -gt "$mem15" ] && tcp_max=$mem15
+  [ "$tcp_max" -lt 65536 ] && tcp_max=65536
+  
+  NET[tcp_rmem_max]=$tcp_max
+  NET[tcp_wmem_max]=$tcp_max
+  NET[tcp_rmem_def]=131072
+  NET[tcp_rmem_min]=4096
+  NET[tcp_wmem_def]=131072
+  NET[tcp_wmem_min]=4096
+  
+  _ok "TCP 缓冲: 最大=$((tcp_max/1024/1024))MB"
+  
+  # UDP
+  local udp_max=$((bdp * 2))
+  [ "$udp_max" -gt "$mem10" ] && udp_max=$mem10
+  [ "$udp_max" -lt 65536 ] && udp_max=65536
+  
+  NET[udp_rmem_min]=16384
+  NET[udp_wmem_min]=16384
+  
+  local page=4096
+  NET[udp_mem_min]=$((udp_max / page / 4))
+  NET[udp_mem_prs]=$((udp_max / page / 2))
+  NET[udp_mem_max]=$((udp_max / page))
+  
+  _ok "UDP 缓冲: 最大=$((udp_max/1024/1024))MB"
+  
+  # Backlog
+  local backlog=$((bw * 100))
+  [ "$backlog" -lt 10000 ] && backlog=10000
+  [ "$backlog" -gt 1000000 ] && backlog=1000000
+  NET[backlog]=$backlog
+  NET[budget]=$((backlog / 10))
+  
+  # Conntrack
+  local ct=$((SYS[mem_bytes] / 32768))
+  [ "$ct" -lt 65536 ] && ct=65536
+  [ "$ct" -gt 524288 ] && ct=524288
+  NET[conntrack]=$ct
+  
+  _ok "Backlog: $backlog, Conntrack: $ct"
+  
+  STATE[buffers_calculated]=1
+  save_state
+}
+
+# ============================================================
+# 第七阶段：地域运营商交互选择
+# ============================================================
+
+show_region_menu() {
+  clear
+  _section "选择探测点"
+  
+  echo ""
+  printf "\033[1;36m%-4s %-10s %-20s %-20s %-20s\033[0m\n" \
+    "ID" "地区" "${ISP_LABELS[0]}" "${ISP_LABELS[1]}" "${ISP_LABELS[2]}"
+  echo "────────────────────────────────────────────────────────────────────────"
+  
+  local idx=1
+  for region in $(printf "%s\n" "${!REGIONS_IPV4[@]}" | sort); do
+    read -r ip_cm ip_cu ip_ct <<< "${REGIONS_IPV4[$region]}"
+    printf "%-4s %-10s %-20s %-20s %-20s\n" "[$idx]" "$region" "$ip_cm" "$ip_cu" "$ip_ct"
+    idx=$((idx + 1))
+  done
+  
+  echo ""
+}
+
+select_and_probe_region() {
+  show_region_menu
+  
+  echo -n "请输入地区编号 (1-${#REGIONS_IPV4[@]}，0=取消): "
+  read -r region_id
+  
+  [ "$region_id" = "0" ] && return 0
+  
+  if ! is_valid_int "$region_id" || [ "$region_id" -gt "${#REGIONS_IPV4[@]}" ]; then
+    _warn "无效编号"
+    pause
+    return 1
+  fi
+  
+  mapfile -t sorted_regions < <(printf "%s\n" "${!REGIONS_IPV4[@]}" | sort)
+  local region="${sorted_regions[$((region_id - 1))]}"
+  
+  read -r ip_cm ip_cu ip_ct <<< "${REGIONS_IPV4[$region]}"
+  
+  echo ""
+  echo "地区: $region"
+  echo "1. ${ISP_LABELS[0]} ($ip_cm)"
+  echo "2. ${ISP_LABELS[1]} ($ip_cu)"
+  echo "3. ${ISP_LABELS[2]} ($ip_ct)"
+  echo "0. 取消"
+  echo ""
+  echo -n "请选择运营商 (0-3): "
+  read -r isp_id
+  
+  [ "$isp_id" = "0" ] && return 0
+  
+  if ! [[ "$isp_id" =~ ^[1-3]$ ]]; then
     _warn "无效选择"
     pause
     return 1
