@@ -4,7 +4,6 @@ vmpt="54321" vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2
 #xray
 bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/argox/main/argox.sh) -c
 
-bash <(curl -l -s https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/refs/heads/main/install.sh)
 #dd脚本
 #更新 apt update && apt install curl -y
 vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="gode" bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
@@ -18,4 +17,7 @@ git clone --recurse-submodules https://github.com/ecdye/zram-config && cd zram-c
 
 #暴力发包
 apt-get install linux-headers-$(uname -r) -y
+#换内核
+bash <(curl -l -s https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/refs/heads/main/install.sh)
+wget -O tcpx.sh "https://github.com/ylx2016/Linux-NetSpeed/raw/master/tcpx.sh" && chmod +x tcpx.sh && ./tcpx.sh
 
