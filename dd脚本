@@ -12,12 +12,70 @@ vmpt="54321" vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2
 curl -O https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh || wget -O ${_##*/} $_
 bash reinstall.sh debian 13 --ssh-port 22 --web-port 8080 --password "Huawei@123..."
 
-#虚拟内存
-git clone --recurse-submodules https://github.com/ecdye/zram-config && cd zram-config && ./install.bash
-
 #暴力发包
 apt-get install linux-headers-$(uname -r) -y
 #换内核
 bash <(curl -l -s https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/refs/heads/main/install.sh)
 wget -O tcpx.sh "https://github.com/ylx2016/Linux-NetSpeed/raw/master/tcpx.sh" && chmod +x tcpx.sh && ./tcpx.sh
+
+
+
+
+
+
+#虚拟内存
+git clone --recurse-submodules https://github.com/ecdye/zram-config && cd zram-config && ./install.bash
+
+
+( \
+    set -e; \
+    \
+    echo "--- 步骤 1/7: 检查并安装依赖工具 (curl, wget, tar, lzip) ---"; \
+    if ! command -v curl >/dev/null || ! command -v wget >/dev/null || ! command -v tar >/dev/null || ! command -v lzip >/dev/null; then \
+        echo "检测到依赖工具缺失，正在尝试自动安装..."; \
+        apt-get update; \
+        apt-get install -y curl wget tar lzip; \
+    fi; \
+    echo "依赖检查完毕。"; \
+    \
+    echo "--- 步骤 2/7: 正在从 GitHub API 获取最新稳定版链接 ---"; \
+    LATEST_RELEASE_URL=$(curl -s "https://api.github.com/repos/ecdye/zram-config/releases/latest" | grep "browser_download_url.*tar.lz" | grep -v ".asc" | cut -d : -f 2,3 | tr -d ',"' | xargs); \
+    if [ -z "$LATEST_RELEASE_URL" ]; then \
+        echo "错误：无法获取最新版本的下载链接，请检查网络或稍后再试。" >&2; \
+        exit 1; \
+    fi; \
+    echo "成功获取链接: $LATEST_RELEASE_URL"; \
+    \
+    echo "--- 步骤 3/7: 正在下载最新稳定版 ---"; \
+    FILE_NAME=$(basename "$LATEST_RELEASE_URL"); \
+    wget -qO "$FILE_NAME" "$LATEST_RELEASE_URL"; \
+    echo "下载完成: $FILE_NAME"; \
+    \
+    echo "--- 步骤 4/7: 正在解压文件 ---"; \
+    TEMP_DIR="zram-config-temp"; \
+    mkdir -p "$TEMP_DIR"; \
+    tar -xf "$FILE_NAME" --strip-components=1 --directory="$TEMP_DIR"; \
+    echo "解压完成。"; \
+    \
+    echo "--- 步骤 5/7: 正在执行安装脚本 ---"; \
+    ./"$TEMP_DIR"/install.bash; \
+    echo "安装脚本执行完毕。"; \
+    \
+    echo "--- 步骤 6/7: 启动服务并设置为开机自启 ---"; \
+    systemctl enable --now zram-config.service; \
+    echo "服务已启动并设置开机自启。"; \
+    \
+    echo "--- 步骤 7/7: 清理临时文件和目录 ---"; \
+    rm "$FILE_NAME"; \
+    rm -r "$TEMP_DIR"; \
+    echo "清理完成。"; \
+    \
+    echo "--------------------------------------------------"; \
+    echo "✅ zram-config 已成功安装并运行！"; \
+    echo "--------------------------------------------------"; \
+    echo "当前服务状态:"; \
+    systemctl status zram-config.service --no-pager; \
+    echo -e "\n配置文件位于 /etc/ztab，您可以按需修改。"; \
+)
+
 
