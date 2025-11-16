@@ -117,3 +117,60 @@ git clone --recurse-submodules https://github.com/ecdye/zram-config && cd zram-c
     $CMD_PREFIX systemctl status zram-config.service --no-pager; \
     echo -e "\n配置文件位于 /etc/ztab，您可以按需修改。"; \
 )
+
+
+#!/bin/bash
+#
+# zram-config Final Post-Installation Fix & Activate Script
+#
+# This script correctly patches the syntax error, configures, and activates zram swap.
+
+( \
+    set -e; \
+    \
+    # --- Step 1: Correctly Apply Compatibility Patch ---
+    echo "--- 步骤 1/4: 正在修正并应用兼容性补丁 ---"; \
+    ZRAM_SCRIPT="/usr/local/sbin/zram-config"; \
+    if [ -f "$ZRAM_SCRIPT" ]; then \
+        # First, undo the previous incorrect patch if it exists
+        sed -i '37s/^\s*#\s*//' "$ZRAM_SCRIPT"; \
+        \
+        # Now, correctly comment out the entire if block (lines 37 to 40)
+        sed -i -e '37s/^/\t#/' \
+               -e '38s/^/\t#/' \
+               -e '39s/^/\t#/' \
+               -e '40s/^/\t#/' "$ZRAM_SCRIPT"; \
+        echo "成功修正语法错误并应用了兼容性补丁。"; \
+    else \
+        echo "错误：未找到主脚本 $ZRAM_SCRIPT，无法继续。" >&2; \
+        exit 1; \
+    fi; \
+    \
+    # --- Step 2: Write Configuration ---
+    echo "--- 步骤 2/4: 正在写入 zram swap 配置 ---"; \
+    if ! grep -q "swap zram0" /etc/ztab; then \
+        echo "swap zram0 50%" >> /etc/ztab; \
+        echo "成功将 'swap zram0 50%' 添加到 /etc/ztab。"; \
+    else \
+        echo "检测到 swap 配置已存在，无需重复写入。"; \
+    fi; \
+    \
+    # --- Step 3: Restart Service ---
+    echo "--- 步骤 3/4: 正在重启服务以应用新配置和补丁 ---"; \
+    systemctl restart zram-config.service; \
+    echo "服务已成功重启。"; \
+    \
+    # --- Step 4: Verify Result ---
+    echo "--- 步骤 4/4: 正在检查最终状态 ---"; \
+    sleep 1; \
+    free -h; \
+    \
+    echo "--------------------------------------------------"; \
+    if free | awk 'NR==3 {exit($2==0)}'; then \
+        echo "❌ 错误：Swap 仍未激活。请再次检查日志。"; \
+    else \
+        echo "✅ zram swap 已成功修复、配置并激活！"; \
+    fi; \
+    echo "--------------------------------------------------"; \
+)
+
