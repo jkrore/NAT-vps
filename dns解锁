@@ -1,4 +1,7 @@
+#一键修改解锁DNS
+wget https://raw.githubusercontent.com/Jimmyzxk/DNS-Alice-Unlock/refs/heads/main/dns-unlock.sh && bash dns-unlock.sh
 
+想解锁 US (美国) -> 您必须返回FOFA，搜索 body="Backend not available" && country="US"
 
 
 # 1. 创建 test_hosts.sh (自动排序并行筛选器 v4.0)
