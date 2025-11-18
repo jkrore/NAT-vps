@@ -4,6 +4,9 @@ vmpt="54321" vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2
 #一键修改解锁DNS
 wget https://raw.githubusercontent.com/Jimmyzxk/DNS-Alice-Unlock/refs/heads/main/dns-unlock.sh && bash dns-unlock.sh
 
+#回程线路
+curl https://raw.githubusercontent.com/ludashi2020/backtrace/main/install.sh -sSf | sh
+
 #xray
 bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/argox/main/argox.sh) -c
 
