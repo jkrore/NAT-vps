@@ -4,6 +4,7 @@ fofa搜索：body="Backend not available" && country="US"
 
 #修改内置的参数
 /etc/smartdns/smartdns.conf
+systemctl restart smartdns
 
 
 
