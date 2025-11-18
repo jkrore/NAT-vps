@@ -1,3 +1,9 @@
+#DNS解锁
+wget https://raw.githubusercontent.com/Jimmyzxk/DNS-Alice-Unlock/refs/heads/main/dns-unlock.sh && bash dns-unlock.sh
+fofa搜索：body="Backend not available" && country="US"
+
+
+
 # 1. 创建 test_hosts.sh (AI增强+排序版 v4.0)
 cat << 'EOF' > test_hosts.sh
 #!/bin/bash
