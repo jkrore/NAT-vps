@@ -1,12 +1,14 @@
 #搭建 hostnamectl set-hostname 名字  🦄🍕 🚀🌍
 vmpt="54321" vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="🐲™️【请勿测速】"  argo="y"  bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
 
+#一键修改解锁DNS
+wget https://raw.githubusercontent.com/Jimmyzxk/DNS-Alice-Unlock/refs/heads/main/dns-unlock.sh && bash dns-unlock.sh
+
 #xray
 bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/argox/main/argox.sh) -c
 
 #dd脚本
 #更新 apt update && apt install curl -y
-vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="gode" bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
 vmpt="54321" vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="gode" cdnym="sp1.godeluoo.eu.org" argo="y" agn="sp2.godeluoo.eu.org" agk="eyJhIjoiZTc3ODQ0NmNjMTlkZGIwNWM1ZDMyODFmMzMzMDhhZWEiLCJ0IjoiYzI3ZjAyMTgtNzEwYS00OTZmLWIzZDItMzI3ZGMzNGViYTRmIiwicyI6Ik9UZGlNbVl4TjJFdE5tSTBNUzAwT0RZeExUZzVOR0V0TVRjMFpEUmlOemRpWlRJeiJ9" bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
 
 #重置
