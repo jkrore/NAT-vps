@@ -1,10 +1,4 @@
-#一键修改解锁DNS
-wget https://raw.githubusercontent.com/Jimmyzxk/DNS-Alice-Unlock/refs/heads/main/dns-unlock.sh && bash dns-unlock.sh
-
-想解锁 US (美国) -> 您必须返回FOFA，搜索 body="Backend not available" && country="US"
-
-
-# 1. 创建 test_hosts.sh (自动排序并行筛选器 v4.0)
+# 1. 创建 test_hosts.sh (AI增强+排序版 v4.0)
 cat << 'EOF' > test_hosts.sh
 #!/bin/bash
 
@@ -12,13 +6,18 @@ cat << 'EOF' > test_hosts.sh
 # 一次同时测试 50 个IP。如果您的VPS配置很低 (1核)，可以改成 20
 MAX_JOBS=50
 
-# --- (可修改) 您想测试的域名列表 ---
+# --- (您要的新域名列表) ---
 TARGET_DOMAINS=(
-    "www.netflix.com"
-    "www.disneyplus.com"
-    "www.hulu.com"
-    "www.dazn.com"
-    "www.bilibili.com"
+    "www.netflix.com"       # Netflix (奈飞)
+    "www.disneyplus.com"    # Disney+ (迪士尼)
+    "www.youtube.com"       # YouTube Premium (油管会员)
+    "www.primevideo.com"    # Amazon Prime Video (亚马逊)
+    "www.tiktok.com"        # Tiktok (国际版抖音)
+    "www.bilibili.com"      # Bilibili Anime (B站动漫)
+    "chat.openai.com"       # ChatGPT
+    "copilot.microsoft.com" # Microsoft Copilot
+    "gemini.google.com"     # Google Gemini
+    "openai.com"            # Sora (使用OpenAI主域作为检测)
 )
 # -----------------------------------
 # --- (下面是脚本正文，不用动) ---
@@ -29,16 +28,15 @@ if [ ! -f "$IP_FILE" ]; then
     exit 1
 fi
 
-# 这是我们将并行运行的函数 (v4.0版：输出为机器可读格式)
+# 这是我们将并行运行的函数
 test_host() {
     host=$1
-    # 必须在函数内重新声明数组，因为 xargs 的子进程看不到它
+    # 必须在函数内重新声明数组
     local domains=(
-        "www.netflix.com"
-        "www.disneyplus.com"
-        "www.hulu.com"
-        "www.dazn.com"
-        "www.bilibili.com"
+        "www.netflix.com" "www.disneyplus.com" "www.youtube.com"
+        "www.primevideo.com" "www.tiktok.com" "www.bilibili.com"
+        "chat.openai.com" "copilot.microsoft.com" "gemini.google.com"
+        "openai.com"
     )
     
     usable_count=0
@@ -46,11 +44,16 @@ test_host() {
     result_details=""
 
     for domain in "${domains[@]}"; do
-        output_code=$(curl -s -o /dev/null -m 1 -H "Host:$domain" -w "%{http_code}" http://$host)
+        # -m 1 = 1秒超时
+        # -H "Host:$domain" = 伪装成访问特定域名
+        # -L = 跟随301/302重定向 (这对AI服务很重要)
+        # 针对AI服务，我们检查 200 (OK) 或 403 (Cloudflare禁止)
+        # 针对流媒体，我们检查 301/302 (重定向)
+        output_code=$(curl -s -o /dev/null -m 1 -L -H "Host:$domain" -w "%{http_code}" http://$host)
         [ -z "$output_code" ] && output_code="000" # Timeout
 
-        # 301/302/307 (重定向) 或 200 (OK) 都算成功
-        if [[ "$output_code" == "301" || "$output_code" == "302" || "$output_code" == "200" ]]; then
+        # (3xx = 重定向, 200 = OK, 403 = 访问到但被拒) 都算“可访问”
+        if [[ "$output_code" == 3* || "$output_code" == "200" || "$output_code" == "403" ]]; then
             ((usable_count++))
             result_details+=" $domain($output_code)"
         fi
@@ -66,10 +69,10 @@ test_host() {
 export -f test_host
 
 echo "开始并行测试 $IP_FILE 中的所有IP (并发数: $MAX_JOBS)..."
-echo "测试目标: ${TARGET_DOMAINS[*]}"
+echo "测试目标 (10个): Netflix, Disney+, YouTube, Prime, Tiktok, Bilibili, ChatGPT, Copilot, Gemini, Sora"
 echo "请稍候，正在全速测试中... (这可能需要几分钟)"
 
-# 核心：使用 xargs -P 进行并行处理, 并把所有 "成功的" 输出存入变量
+# 核心：使用 xargs -P 进行并行处理
 RAW_RESULTS=$(grep -vE '^\s*#|^\s*$' "$IP_FILE" | xargs -P "$MAX_JOBS" -I {} bash -c 'test_host {}')
 
 echo "----------------------------------------------------------------"
@@ -82,10 +85,6 @@ if [ -z "$RAW_RESULTS" ]; then
 fi
 
 # 核心：排序
-# -t';' = 使用分号作为分隔符
-# -k1,1 = 只看第一个字段 (解锁能力)
-# n = 按数字排序
-# r = 降序 (从高到低)
 SORTED_RESULTS=$(echo "$RAW_RESULTS" | sort -t';' -k1,1nr)
 
 # 循环输出排序后的结果
@@ -93,7 +92,7 @@ echo "$SORTED_RESULTS" | while IFS=';' read -r count ip details; do
     # 重新给详情加上颜色
     details_colored=$(echo "$details" | sed -r 's/\(([0-9]{3})\)/(\033[1;32m\1\033[0m)/g')
     
-    echo -e "\033[1;32m[ ✓ ] IP: $ip\t(解锁能力: $count)\033[0m"
+    echo -e "\03G[1;32m[ ✓ ] IP: $ip\t(解锁能力: $count / 10)\033[0m"
     echo -e "      ↳ 详情:$details_colored"
     echo "---"
 done
@@ -109,7 +108,8 @@ cat << 'EOF' > ip_list.txt
 # 请把您找到的 1000 个IP粘贴到这里
 # (每行一个，空行和#开头的行会被自动忽略)
 
-8.8.8.8
+206.237.3.8
+
 EOF
 
 # 4. 执行脚本
