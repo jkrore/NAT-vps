@@ -2,6 +2,9 @@
 wget https://raw.githubusercontent.com/Jimmyzxk/DNS-Alice-Unlock/refs/heads/main/dns-unlock.sh && bash dns-unlock.sh
 fofa搜索：body="Backend not available" && country="US"
 
+#修改内置的参数
+/etc/smartdns/smartdns.conf
+
 
 
 # 1. 创建 test_hosts.sh (AI增强+排序版 v4.0)
