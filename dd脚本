@@ -1,31 +1,7 @@
 #搭建 hostnamectl set-hostname 名字  🦄🍕 🚀🌍
 vmpt="54321" vlpt="1000" xhpt="1001" vxpt="1002" arpt="2003" anpt="2002" hypt="2000" tupt="2001" name="🐲™️【请勿测速】"  argo="y"  bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
 
-#快速安装docker
-# 更新软件包列表
-sudo apt update
 
-# 安装必要的软件包
-# 注意：apt-transport-https 不再需要，但保留 curl, gnupg, lsb-release 等
-sudo apt install ca-certificates curl gnupg lsb-release
-
-# 添加 Docker 的官方 GPG 密钥（使用新路径 /etc/apt/keyrings）
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-# 设置 Docker 稳定版存储库
-# 使用 /etc/apt/keyrings/docker.gpg 路径和 signed-by 属性
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-# 更新索引并安装 Docker 引擎、CLI 和 Compose 插件
-sudo apt update
-sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-#  验证安装
-sudo docker run hello-world
 
 #回程线路
 curl https://raw.githubusercontent.com/ludashi2020/backtrace/main/install.sh -sSf | sh
@@ -224,3 +200,44 @@ main() {
 
 main "$@"
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#快速安装docker
+# 更新软件包列表
+sudo apt update
+
+# 安装必要的软件包
+# 注意：apt-transport-https 不再需要，但保留 curl, gnupg, lsb-release 等
+sudo apt install ca-certificates curl gnupg lsb-release
+
+# 添加 Docker 的官方 GPG 密钥（使用新路径 /etc/apt/keyrings）
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+# 设置 Docker 稳定版存储库
+# 使用 /etc/apt/keyrings/docker.gpg 路径和 signed-by 属性
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# 更新索引并安装 Docker 引擎、CLI 和 Compose 插件
+sudo apt update
+sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+#  验证安装
+sudo docker run hello-world
