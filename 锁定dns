@@ -1,0 +1,103 @@
+bash <(cat <<EOF
+#!/bin/bash
+# ====================================================
+#   TikTok 运营专用：DNS 极致净化与锁定工具 (Pro版)
+# ====================================================
+
+# 1. 定义配色和格式
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "\n\${BLUE}>>> 正在初始化环境检测工具...\${NC}"
+
+# 2. 静默安装依赖
+apt update -y >/dev/null 2>&1
+apt install dnsutils e2fsprogs curl -y >/dev/null 2>&1
+
+# 3. 执行锁定流程 (解锁 -> 写入 -> 焊死)
+chattr -i /etc/resolv.conf 2>/dev/null
+echo "nameserver 1.1.1.1" > /etc/resolv.conf
+echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+chattr +i /etc/resolv.conf
+
+# 4. 获取数据 (核心智能部分)
+# 获取本机公网 IP
+MY_IP=\$(curl -s https://api.ip.sb/ip -4)
+# 获取 DNS 解析 IP (处理 messy output)
+# 使用 grep 和 awk 提取纯净 IP，去掉 ecs/ns 等杂讯
+DNS_RAW=\$(dig +short TXT whoami.ds.akahelp.net)
+DNS_EXIT_IP=\$(echo "\$DNS_RAW" | grep "ip" |  sed 's/.*ip //' | sed 's/"//g' | head -n 1)
+# 获取当前 DNS 配置文件内容
+CURRENT_CONF=\$(cat /etc/resolv.conf | tr '\n' ' ')
+# 获取文件属性
+ATTR=\$(lsattr /etc/resolv.conf)
+
+# 5. 输出专业报告
+clear
+echo -e "\${CYAN}=========================================================\${NC}"
+echo -e "           \${YELLOW}🔍 DNS 环境深度体检报告 (TikTok专用)\${NC}"
+echo -e "\${CYAN}=========================================================\${NC}"
+
+# --- 检测项 1: 锁定状态 ---
+printf "%-30s" "1. 防篡改锁定 (Immutable):"
+if [[ "\$ATTR" == *"i"* ]]; then
+    echo -e "\${GREEN}[ 已锁死 ✅ ]\${NC}"
+else
+    echo -e "\${RED}[ 未锁定 ❌ ]\${NC}"
+fi
+
+# --- 检测项 2: 配置内容 ---
+printf "%-30s" "2. DNS 服务器配置:"
+if [[ "\$CURRENT_CONF" == *"1.1.1.1"* ]]; then
+    echo -e "\${GREEN}[ 国际标准 ✅ ]\${NC}"
+    echo -e "   \${BLUE}↳ 当前值: 1.1.1.1 / 8.8.8.8\${NC}"
+else
+    echo -e "\${RED}[ 异常/被篡改 ❌ ]\${NC}"
+    echo -e "   \${RED}↳ 当前值: \$CURRENT_CONF\${NC}"
+fi
+
+# --- 检测项 3: 解析连通性 ---
+printf "%-30s" "3. 谷歌解析测试:"
+PING_TEST=\$(dig google.com +short | head -n 1)
+if [[ -n "\$PING_TEST" ]]; then
+    echo -e "\${GREEN}[ 通畅 ✅ ]\${NC}"
+else
+    echo -e "\${RED}[ 失败/超时 ❌ ]\${NC}"
+fi
+
+echo -e "\${CYAN}---------------------------------------------------------\${NC}"
+
+# --- 检测项 4: 泄露智能分析 ---
+echo -e "\${YELLOW}4. 泄露风险智能分析:\${NC}"
+
+echo -e "   VPS 本机 IP :  \${CYAN}\$MY_IP\${NC}"
+if [[ -z "\$DNS_EXIT_IP" ]]; then
+    echo -e "   DNS 出口 IP :  \${RED}检测失败 (Dig命令无返回)\${NC}"
+else
+    echo -e "   DNS 出口 IP :  \${CYAN}\$DNS_EXIT_IP\${NC}"
+fi
+
+# --- 最终结论 ---
+echo ""
+printf "%-30s" "   🛡️  最终判定:"
+
+# 简单的判断逻辑：如果 DNS 出口 IP 也是本机 IP 段，或者非空，通常代表走了正确的出口
+if [[ -n "\$DNS_EXIT_IP" ]]; then
+    # 检查是否是中国 IP (简单判断)
+    IS_CN=\$(curl -s "http://ip-api.com/json/\$DNS_EXIT_IP" | grep "China")
+    if [[ -n "\$IS_CN" ]]; then
+         echo -e "\${RED}[ 严重警告：DNS 在中国境内解析 (泄露) ❌ ]\${NC}"
+    else
+         echo -e "\${GREEN}[ 安全 (纯净国际出口) ✅ ]\${NC}"
+    fi
+else
+    echo -e "\${YELLOW}[ 需要人工复核 ]\${NC}"
+fi
+
+echo -e "\${CYAN}=========================================================\${NC}"
+EOF
+)
