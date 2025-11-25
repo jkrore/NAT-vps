@@ -6,6 +6,12 @@ vmpt="" name="🐲™️godeluoo" argo="vmpt" bash <(curl -Ls https://raw.github
 #回程线路
 curl https://raw.githubusercontent.com/ludashi2020/backtrace/main/install.sh -sSf | sh
 
+#检测内存交换、气球驱动、内存合并检测脚本
+curl https://raw.githubusercontent.com/uselibrary/memoryCheck/main/memoryCheck.sh | bash
+# virtio_balloon模块用于虚拟机内存的动态分配，可移除，命令如下：
+rmmod virtio_balloon
+echo "blacklist virtio_balloon" > /etc/modprobe.d/balloon.conf
+
 #xray
 bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/argox/main/argox.sh) -c
 
