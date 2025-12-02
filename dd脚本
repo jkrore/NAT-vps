@@ -15,7 +15,21 @@ echo "blacklist virtio_balloon" > /etc/modprobe.d/balloon.conf
 #xray
 bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/argox/main/argox.sh) -c
 
-#更新 apt update && apt install curl -y
+#更新 
+apt install sudo -y && \
+sudo apt --fix-broken install -y && \
+sudo apt update -y && \
+sudo apt install -y \
+    curl wget ca-certificates gnupg lsb-release \
+    tasksel socat apt-listchanges && \
+sudo tasksel install standard ssh-server && \
+sudo apt clean && \
+echo "===== 基础工具验证 =====" && \
+curl --version && wget --version && \
+echo "===== 网络工具验证 =====" && \
+socat -V && \
+echo "===== SSH服务状态 =====" && \
+sudo systemctl status ssh --no-pager
 
 #重置
 curl -O https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh || wget -O ${_##*/} $_
