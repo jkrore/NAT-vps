@@ -2,6 +2,14 @@
 vmpt="" name="🐲™️godeluoo" argo="vmpt" bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
 
 
+#root登录
+cat >> /etc/ssh/sshd_config <<EOF
+PermitRootLogin yes
+PasswordAuthentication yes
+EOF
+passwd root
+systemctl restart ssh
+
 
 #回程线路
 curl https://raw.githubusercontent.com/ludashi2020/backtrace/main/install.sh -sSf | sh
