@@ -3,11 +3,13 @@ vmpt="" name="🐲™️godeluoo" argo="vmpt" bash <(curl -Ls https://raw.github
 
 
 #root登录
-cat >> /etc/ssh/sshd_config <<EOF
-PermitRootLogin yes
-PasswordAuthentication yes
-EOF
+# 1. 强行开启 Root 登录
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+# 2. 强行开启密码验证
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+# 3. 设置 Root 密码（重装后必须重新设置）
 passwd root
+# 4. 重启 SSH 服务
 systemctl restart ssh
 
 
