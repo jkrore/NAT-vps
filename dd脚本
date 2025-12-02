@@ -12,6 +12,10 @@ passwd root
 # 4. 重启 SSH 服务
 systemctl restart ssh
 
+#补全tab
+apt update
+apt install bash-completion -y
+
 
 #回程线路
 curl https://raw.githubusercontent.com/ludashi2020/backtrace/main/install.sh -sSf | sh
