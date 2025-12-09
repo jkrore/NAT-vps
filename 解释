@@ -1,3 +1,15 @@
+#win的Defender Remover
+点击 病毒和威胁防护 (盾牌图标)。
+点击“病毒和威胁防护设置”下的 管理设置。
+关掉【篡改防护】 (Tamper Protection)。
+注意： 此时 UAC 会弹窗报警，点“是”。
+实时防护、云提供的保护、自动提交样本 全部关掉。
+
+#关闭 VBS / HVCI (内核隔离)
+Win + R 输入 msinfo32或者Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard#VirtualizationBasedSecurityStatus 0（关）
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v "EnableVirtualizationBasedSecurity" /t REG_DWORD /d 0 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v "Enabled" /t REG_DWORD /d 0 /f
+
 #路由器设置
 改 MTU： 1480
 改 DNS： 阿里 + 腾讯
