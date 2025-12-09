@@ -7,6 +7,7 @@
 
 #关闭 VBS / HVCI (内核隔离)
 Win + R 输入 msinfo32或者Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard#VirtualizationBasedSecurityStatus 0（关）
+bcdedit /set hypervisorlaunchtype off
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v "EnableVirtualizationBasedSecurity" /t REG_DWORD /d 0 /f
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v "Enabled" /t REG_DWORD /d 0 /f
 
