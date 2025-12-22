@@ -17,92 +17,79 @@ reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorE
 # ==========================================
 & {
     Clear-Host
-    $host.UI.RawUI.WindowTitle = "Win11 25H2 终极判官 (附带强力补丁)"
+    $host.UI.RawUI.WindowTitle = "Win11 25H2 终极验证 (完美版)"
     
-    # 定义颜色
+    # 1. 修复颜色变量，确保绝对不会报错
     $cPass = "Green"
     $cFail = "Red"
-    $cWarn = "Yellow"
-    $cInfo = "Cyan"
-    $cCmd  = "White" # 命令行颜色
+    $cCmd  = "Yellow"  # 修复指令颜色
+    $cTxt  = "White"   # 普通文字颜色
+    $cDim  = "Gray"    # 分隔符颜色
 
-    function Print-Block ($Name, $Condition, $FixCommand, $FixDesc) {
-        Write-Host "--------------------------------------------------------------" -ForegroundColor DarkGray
-        Write-Host "检查项目: $Name" -ForegroundColor $cInfo
+    # 2. 定义核心检查函数
+    function Check-Item ($Name, $Condition, $FixCommand) {
+        Write-Host "--------------------------------------------------------------" -ForegroundColor $cDim
+        Write-Host "检查项目: $Name" -ForegroundColor $cTxt
         
         if ($Condition) {
-            Write-Host "当前状态: [✅ 满血]" -ForegroundColor $cPass
-            Write-Host "无需操作: 你的设置已经是最佳。" -ForegroundColor DarkGray
+            Write-Host "当前状态: [✅ 已满血]" -ForegroundColor $cPass
         } else {
-            Write-Host "当前状态: [❌ 瓶颈]" -ForegroundColor $cFail
-            Write-Host ">>> 立即执行修复 (复制下方命令):" -ForegroundColor $cWarn
-            Write-Host $FixCommand -ForegroundColor $cCmd -BackgroundColor DarkBlue
-            Write-Host "说明: $FixDesc" -ForegroundColor Gray
+            Write-Host "当前状态: [❌ 发现瓶颈]" -ForegroundColor $cFail
+            Write-Host ">>> 修复代码 (复制下方命令并执行):" -ForegroundColor $cTxt
+            Write-Host $FixCommand -ForegroundColor $cCmd
         }
     }
 
-    Write-Host "==============================================================" -ForegroundColor White -BackgroundColor DarkBlue
-    Write-Host "      WIN11 25H2 核心大头验证 & 修复方案 (i5+MX350专用)      " -ForegroundColor White -BackgroundColor DarkBlue
-    Write-Host "==============================================================" -ForegroundColor White -BackgroundColor DarkBlue
+    Write-Host "==========================================================" -ForegroundColor $cTxt -BackgroundColor DarkBlue
+    Write-Host "      WIN11 25H2 核心大头状态检查 (i5 + MX350 + 32G)      " -ForegroundColor $cTxt -BackgroundColor DarkBlue
+    Write-Host "==========================================================" -ForegroundColor $cTxt -BackgroundColor DarkBlue
     Write-Host ""
 
-    # 1. 内存压缩 (25H2 必须开启)
-    # 你的上一次报告这里是红的，重点关注
-    $mma = Get-MMAgent
-    Print-Block "内存压缩 (Memory Compression)" `
-        ($mma.MemoryCompression -eq $true) `
-        "Enable-MMAgent -mc" `
-        "开启后减少硬盘读写，防止 32G 内存被浪费，重启生效。"
-
-    # 2. 电源计划 (必须卓越/高性能)
-    # 你的上一次报告这里也是红的，重点关注
-    $power = Get-CimInstance -Namespace root\cimv2\power -ClassName Win32_PowerPlan | Where-Object {$_.IsActive}
-    Print-Block "电源计划 (解除 CPU 封印)" `
-        ($power.ElementName -match "High|Ultimate|Performance|卓越|高性能") `
-        "powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61" `
-        "执行命令解锁[卓越性能]，然后去控制面板->电源选项手动切换。"
-
-    # 3. 内核隔离 (VBS)
-    # 11代 U 的性能杀手，必须关
+    # --- [1] 内核隔离 (VBS) ---
     $dg = Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard -ErrorAction SilentlyContinue
-    Print-Block "内核隔离/VBS (虚拟化安全)" `
+    Check-Item "内核隔离 (VBS/HVCI)" `
         ($dg.VirtualizationBasedSecurityStatus -eq 0) `
-        "无命令。请手动去 [Windows 安全中心] -> [设备安全性] -> [内核隔离] -> 关闭" `
-        "关掉它，CPU 性能提升 15%。"
+        'reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v "EnableVirtualizationBasedSecurity" /t REG_DWORD /d 0 /f; reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v "Enabled" /t REG_DWORD /d 0 /f'
 
-    # 4. GPU 硬件加速 (HAGS)
-    # 拯救 MX350 显存
+    # --- [2] 电源计划 ---
+    $power = Get-CimInstance -Namespace root\cimv2\power -ClassName Win32_PowerPlan | Where-Object {$_.IsActive}
+    Check-Item "电源计划 (卓越/高性能)" `
+        ($power.ElementName -match "High|Ultimate|Performance|卓越|高性能") `
+        'powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61'
+
+    # --- [3] GPU 硬件加速 (HAGS) ---
     $hags = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -ErrorAction SilentlyContinue
-    Print-Block "GPU 硬件加速调度 (HAGS)" `
+    Check-Item "GPU 硬件加速 (HAGS)" `
         ($hags.HwSchMode -eq 2) `
-        "reg add HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers /v HwSchMode /t REG_DWORD /d 2 /f" `
-        "强制开启显卡调度，重启生效。"
+        'reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v "HwSchMode" /t REG_DWORD /d 2 /f'
 
-    # 5. 网络算法 (CUBIC)
-    # 25H2 默认算法
+    # --- [4] 内存压缩 (32G必开) ---
+    $mma = Get-MMAgent
+    Check-Item "内存压缩 (Memory Compression)" `
+        ($mma.MemoryCompression -eq $true) `
+        'Enable-MMAgent -mc'
+
+    # --- [5] 网络防抖 (RSC) ---
+    $rsc = Get-NetAdapterRsc | Where-Object {$_.IPv4Enabled -eq $true}
+    Check-Item "网络防抖 (禁用 RSC)" `
+        (-not $rsc) `
+        'netsh int tcp set global rsc=disabled'
+
+    # --- [6] 网络算法 (CUBIC) ---
     $tcp = Get-NetTCPSetting -SettingName "Internet"
-    Print-Block "网络拥塞控制 (CUBIC)" `
+    Check-Item "网络算法 (CUBIC)" `
         ($tcp.CongestionProvider -eq "CUBIC") `
-        "netsh int tcp set supplemental template=internet congestionprovider=cubic" `
-        "重置为 Win11 25H2 最稳的 CUBIC 算法。"
+        'netsh int tcp set supplemental template=internet congestionprovider=cubic'
 
-    # 6. 游戏模式
-    # 调度优先级
-    $gameMode = Get-ItemProperty "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -ErrorAction SilentlyContinue
-    Print-Block "Windows 游戏模式" `
-        ($gameMode.AutoGameModeEnabled -eq 1) `
-        "reg add HKCU\Software\Microsoft\GameBar /v AutoGameModeEnabled /t REG_DWORD /d 1 /f" `
-        "强制开启游戏模式，确保前台流畅。"
-
-    Write-Host "--------------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host " [⚠️ 最后的物理确认 (只能手动按)] " -ForegroundColor Yellow
-    Write-Host " 1. 硬盘: 设备管理器 -> Samsung 980 -> 策略 -> [√]启用写入缓存" -ForegroundColor White
-    Write-Host " 2. 散热: 键盘 Fn+Q -> 看到红色图标 (野兽模式)" -ForegroundColor White
-    Write-Host " 3. 网卡: 设备管理器 -> AX201 -> 电源 -> [x]允许关闭设备" -ForegroundColor White
-    Write-Host ""
-    Write-Host "==============================================================" -ForegroundColor White -BackgroundColor DarkBlue
+    Write-Host "==========================================================" -ForegroundColor $cTxt -BackgroundColor DarkBlue
+    Write-Host "   【最后的手动确认】 (脚本无法修改，请肉眼确认)          " -ForegroundColor $cCmd
+    Write-Host "    1. 散热释放: 按 Fn+Q -> 确保灯变红 (野兽模式)         " -ForegroundColor $cTxt
+    Write-Host "    2. 硬盘缓存: 设备管理器->Samsung 980->策略->[√]写入缓存" -ForegroundColor $cTxt
+    Write-Host "    3. 电源切换: 如果刚才执行了电源修复，去控制面板选中它 " -ForegroundColor $cTxt
+    Write-Host "==========================================================" -ForegroundColor $cTxt -BackgroundColor DarkBlue
+    Pause
 }
 # ==========================================
-# 检测成功了
+# 结束了
 # ==========================================
