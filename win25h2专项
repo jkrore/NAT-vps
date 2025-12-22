@@ -11,23 +11,33 @@ bcdedit /set hypervisorlaunchtype off
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v "EnableVirtualizationBasedSecurity" /t REG_DWORD /d 0 /f
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v "Enabled" /t REG_DWORD /d 0 /f
 
-#性能检测脚本
-# ==========================================
-# 复制从这里开始
-# ==========================================
+<#
+.SYNOPSIS
+    Win11 25H2 核心性能瓶颈“大头”检测脚本 (最终修正版)
+    Target: i5 + MX350 + 32GB RAM (针对大内存优化)
+    Updates: 修正32GB内存压缩策略，集成网络协议栈检查
+#>
+
+# 0. 提权检查
+if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    Write-Warning "需管理员权限以检测系统深层状态，请右键选择 [以管理员身份运行] !"
+    Start-Sleep -Seconds 3
+    Exit
+}
+
 & {
     Clear-Host
-    $host.UI.RawUI.WindowTitle = "Win11 25H2 终极验证 (完美版)"
+    $host.UI.RawUI.WindowTitle = "Win11 25H2 终极验证 (Final Release)"
     
-    # 1. 修复颜色变量，确保绝对不会报错
+    # 颜色定义
     $cPass = "Green"
     $cFail = "Red"
-    $cCmd  = "Yellow"  # 修复指令颜色
-    $cTxt  = "White"   # 普通文字颜色
-    $cDim  = "Gray"    # 分隔符颜色
+    $cCmd  = "Yellow"
+    $cTxt  = "White"
+    $cDim  = "Gray"
 
-    # 2. 定义核心检查函数
-    function Check-Item ($Name, $Condition, $FixCommand) {
+    # 通用检查函数
+    function Check-Item ($Name, $Condition, $FixCommand, $Note="") {
         Write-Host "--------------------------------------------------------------" -ForegroundColor $cDim
         Write-Host "检查项目: $Name" -ForegroundColor $cTxt
         
@@ -35,47 +45,64 @@ reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorE
             Write-Host "当前状态: [✅ 已满血]" -ForegroundColor $cPass
         } else {
             Write-Host "当前状态: [❌ 发现瓶颈]" -ForegroundColor $cFail
+            if ($Note) { Write-Host "   说明: $Note" -ForegroundColor $cDim }
             Write-Host ">>> 修复代码 (复制下方命令并执行):" -ForegroundColor $cTxt
             Write-Host $FixCommand -ForegroundColor $cCmd
         }
     }
 
     Write-Host "==========================================================" -ForegroundColor $cTxt -BackgroundColor DarkBlue
-    Write-Host "      WIN11 25H2 核心大头状态检查 (i5 + MX350 + 32G)      " -ForegroundColor $cTxt -BackgroundColor DarkBlue
+    Write-Host "      WIN11 25H2 核心大头状态检查 (32GB 定制版)           " -ForegroundColor $cTxt -BackgroundColor DarkBlue
     Write-Host "==========================================================" -ForegroundColor $cTxt -BackgroundColor DarkBlue
     Write-Host ""
 
-    # --- [1] 内核隔离 (VBS) ---
+    # --- [1] 内核隔离 (VBS/HVCI) ---
+    # 理由: 游戏性能最大杀手，i5 必须关
     $dg = Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard -ErrorAction SilentlyContinue
     Check-Item "内核隔离 (VBS/HVCI)" `
         ($dg.VirtualizationBasedSecurityStatus -eq 0) `
-        'reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v "EnableVirtualizationBasedSecurity" /t REG_DWORD /d 0 /f; reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v "Enabled" /t REG_DWORD /d 0 /f'
+        'reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v "EnableVirtualizationBasedSecurity" /t REG_DWORD /d 0 /f; reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v "Enabled" /t REG_DWORD /d 0 /f' `
+        "关闭 VBS 可减少 5-20% 的游戏掉帧"
 
     # --- [2] 电源计划 ---
+    # 理由: 防止 CPU 核心乱停车
     $power = Get-CimInstance -Namespace root\cimv2\power -ClassName Win32_PowerPlan | Where-Object {$_.IsActive}
     Check-Item "电源计划 (卓越/高性能)" `
         ($power.ElementName -match "High|Ultimate|Performance|卓越|高性能") `
-        'powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61'
+        'powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61' `
+        "高性能模式能让 CPU 频率响应更积极"
 
     # --- [3] GPU 硬件加速 (HAGS) ---
+    # 理由: 减轻 CPU 调度负担，辅助 MX350
     $hags = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -ErrorAction SilentlyContinue
     Check-Item "GPU 硬件加速 (HAGS)" `
         ($hags.HwSchMode -eq 2) `
         'reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v "HwSchMode" /t REG_DWORD /d 2 /f'
 
-    # --- [4] 内存压缩 (32G必开) ---
+    # --- [4] 内存压缩 (32G 特供逻辑) ---
+    # 理由: 32G 内存极其充裕，禁用压缩可减少 CPU 介入，降低系统延迟
     $mma = Get-MMAgent
-    Check-Item "内存压缩 (Memory Compression)" `
-        ($mma.MemoryCompression -eq $true) `
-        'Enable-MMAgent -mc'
+    Check-Item "内存压缩 (已禁用)" `
+        ($mma.MemoryCompression -eq $false) `
+        'Disable-MMAgent -mc' `
+        "32GB 内存不需要压缩，禁用可释放 CPU 算力"
 
-    # --- [5] 网络防抖 (RSC) ---
+    # --- [5] 游戏模式 (Game Mode) ---
+    # 理由: 微软官方优化，分配高优先级
+    $gm = Get-ItemProperty "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -ErrorAction SilentlyContinue
+    Check-Item "Windows 游戏模式" `
+        ($gm.AutoGameModeEnabled -eq 1) `
+        'reg add "HKCU\Software\Microsoft\GameBar" /v AutoGameModeEnabled /t REG_DWORD /d 1 /f'
+
+    # --- [6] 网络防抖 (RSC) ---
+    # 理由: 解决 Wi-Fi Ping 值跳动
     $rsc = Get-NetAdapterRsc | Where-Object {$_.IPv4Enabled -eq $true}
-    Check-Item "网络防抖 (禁用 RSC)" `
+    Check-Item "Wi-Fi 防抖 (禁用 RSC)" `
         (-not $rsc) `
         'netsh int tcp set global rsc=disabled'
 
-    # --- [6] 网络算法 (CUBIC) ---
+    # --- [7] 网络算法 (CUBIC) ---
+    # 理由: 抗波动的 TCP 拥塞控制算法
     $tcp = Get-NetTCPSetting -SettingName "Internet"
     Check-Item "网络算法 (CUBIC)" `
         ($tcp.CongestionProvider -eq "CUBIC") `
@@ -83,13 +110,10 @@ reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorE
 
     Write-Host ""
     Write-Host "==========================================================" -ForegroundColor $cTxt -BackgroundColor DarkBlue
-    Write-Host "   【最后的手动确认】 (脚本无法修改，请肉眼确认)          " -ForegroundColor $cCmd
-    Write-Host "    1. 散热释放: 按 Fn+Q -> 确保灯变红 (野兽模式)         " -ForegroundColor $cTxt
-    Write-Host "    2. 硬盘缓存: 设备管理器->Samsung 980->策略->[√]写入缓存" -ForegroundColor $cTxt
-    Write-Host "    3. 电源切换: 如果刚才执行了电源修复，去控制面板选中它 " -ForegroundColor $cTxt
+    Write-Host "   【最后的手动确认】 (脚本无法修改，请务必肉眼确认)      " -ForegroundColor $cCmd
+    Write-Host "    1. [散热] 按 Fn+Q -> 确保灯变红 (联想野兽模式)        " -ForegroundColor $cTxt
+    Write-Host "    2. [硬盘] 设备管理器->磁盘驱动器->策略->[√]写入缓存   " -ForegroundColor $cTxt
+    Write-Host "    3. [显卡] Nvidia 控制面板->管理3D设置->电源->最高性能 " -ForegroundColor $cTxt
     Write-Host "==========================================================" -ForegroundColor $cTxt -BackgroundColor DarkBlue
     Pause
 }
-# ==========================================
-# 结束了
-# ==========================================
