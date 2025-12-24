@@ -117,3 +117,70 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
     Write-Host "==========================================================" -ForegroundColor $cTxt -BackgroundColor DarkBlue
     Pause
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#!/bin/bash
+
+# 1. 结束 Edge 进程，确保策略能被重新读取
+echo "正在关闭 Microsoft Edge..."
+pkill "Microsoft Edge" 2>/dev/null
+
+echo "正在写入全部 17 项优化策略..."
+
+# --- 第一组：隐私、后台与广告 (对应图一) ---
+# 1. 禁止后台模式
+defaults write com.microsoft.Edge BackgroundModeEnabled -bool false
+# 2. 【补全】压制 Bing 搜索广告
+defaults write com.microsoft.Edge BingAdsSuppression -bool true
+# 3. 诊断数据设为 0 (最低)
+defaults write com.microsoft.Edge DiagnosticData -int 0
+# 4. 隐藏首次运行欢迎页
+defaults write com.microsoft.Edge HideFirstRunExperience -bool true
+# 5. 禁用 Insider 测试版推广
+defaults write com.microsoft.Edge MicrosoftEdgeInsiderPromotionEnabled -bool false
+# 6. 禁用个性化报告
+defaults write com.microsoft.Edge PersonalizationReportingEnabled -bool false
+# 7. 禁用推荐弹窗
+defaults write com.microsoft.Edge ShowRecommendationsEnabled -bool false
+# 8. 禁用微软积分 (Rewards)
+defaults write com.microsoft.Edge ShowMicrosoftRewards -bool false
+# 9. 禁用标签页服务 (数据上传)
+defaults write com.microsoft.Edge TabServicesEnabled -bool false
+
+# --- 第二组：新标签页与下载 (对应图一) ---
+# 10. 新标签页不加载内容 (新闻流)
+defaults write com.microsoft.Edge NewTabPageContentEnabled -bool false
+# 11. 新标签页隐藏默认热门站点
+defaults write com.microsoft.Edge NewTabPageHideDefaultTopSites -bool true
+# 13. 关闭不安全下载警告
+defaults write com.microsoft.Edge ShowDownloadsInsecureWarningsEnabled -bool false
+
+# --- 第三组：界面干扰与购物 (对应图二) ---
+# 14. 禁止右键菜单访问默认搜索
+defaults write com.microsoft.Edge DefaultSearchProviderContextMenuAccessAllowed -bool false
+# 15. 禁用购物助手
+defaults write com.microsoft.Edge EdgeShoppingAssistantEnabled -bool false
+# 16. 禁用侧边栏 (Hubs)
+defaults write com.microsoft.Edge HubsSidebarEnabled -bool false
+# 17. 禁用用户反馈按钮
+defaults write com.microsoft.Edge UserFeedbackAllowed -bool false
+
+# --- 刷新配置缓存 ---
+echo "正在刷新系统配置缓存..."
+killall cfprefsd
+
+echo "✅ 17项策略已全部写入完成！请重新打开 Edge 检查 edge://policy"
