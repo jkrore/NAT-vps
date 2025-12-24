@@ -184,3 +184,37 @@ echo "正在刷新系统配置缓存..."
 killall cfprefsd
 
 echo "✅ 17项策略已全部写入完成！请重新打开 Edge 检查 edge://policy"
+
+
+
+
+
+#精简版本
+
+# 1. 强制关闭 Edge 以便写入
+echo "正在关闭 Microsoft Edge..."
+pkill "Microsoft Edge" 2>/dev/null
+
+# --- 写入所有优化策略 ---
+defaults write com.microsoft.Edge BackgroundModeEnabled -bool false
+defaults write com.microsoft.Edge BingAdsSuppression -bool true
+defaults write com.microsoft.Edge DiagnosticData -int 0
+defaults write com.microsoft.Edge HideFirstRunExperience -bool true
+defaults write com.microsoft.Edge MicrosoftEdgeInsiderPromotionEnabled -bool false
+defaults write com.microsoft.Edge PersonalizationReportingEnabled -bool false
+defaults write com.microsoft.Edge ShowRecommendationsEnabled -bool false
+defaults write com.microsoft.Edge ShowMicrosoftRewards -bool false
+defaults write com.microsoft.Edge TabServicesEnabled -bool false
+defaults write com.microsoft.Edge NewTabPageContentEnabled -bool false
+defaults write com.microsoft.Edge NewTabPageHideDefaultTopSites -bool true
+defaults write com.microsoft.Edge ShowDownloadsInsecureWarningsEnabled -bool false
+defaults write com.microsoft.Edge DefaultSearchProviderContextMenuAccessAllowed -bool false
+defaults write com.microsoft.Edge EdgeShoppingAssistantEnabled -bool false
+defaults write com.microsoft.Edge HubsSidebarEnabled -bool false
+defaults write com.microsoft.Edge UserFeedbackAllowed -bool false
+
+# --- 刷新并生效 ---
+echo "正在刷新系统配置缓存..."
+killall cfprefsd
+
+echo "✅ 优化完成！请打开 Edge 输入 edge://policy 检查"
