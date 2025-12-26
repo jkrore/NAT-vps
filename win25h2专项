@@ -84,10 +84,6 @@ Apply-Tweak "禁用网络 RSC (防断流)" {
     netsh int tcp set global rsc=disabled | Out-Null
 } "解决 Win11 WiFi 跳 Ping 和 SSH 断连"
 
-# --- [SA 生产力] 右键菜单 ---
-Apply-Tweak "恢复 Win10 经典右键菜单" {
-    reg add "HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InProcServer32" /f /ve | Out-Null
-} "找回 7-Zip/Code 直接点击的效率"
 
 # --- [新增大头] 系统去臃肿 (Debloat) ---
 Apply-Tweak "卸载系统臃肿应用 (后台大户)" {
