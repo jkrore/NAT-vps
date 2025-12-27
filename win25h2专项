@@ -122,6 +122,51 @@ Enable-MMAgent -mc
 
 
 
+# --- 1. 任务栏净化 (Widgets, Copilot, Chat) ---
+Write-Host "正在执行：隐藏任务栏小组件、Copilot、聊天按钮..."
+# 隐藏小组件
+Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarDa" -Value 0 -Type DWord -Force
+# 隐藏聊天 (Teams)
+Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarMn" -Value 0 -Type DWord -Force
+# 隐藏 Copilot (通过策略禁用，更彻底)
+$copilotPath = "HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot"
+if (!(Test-Path $copilotPath)) { New-Item -Path $copilotPath -Force | Out-Null }
+Set-ItemProperty -Path $copilotPath -Name "TurnOffWindowsCopilot" -Value 1 -Type DWord -Force
+
+# --- 2. 资源管理器习惯 (扩展名, 260字符路径) ---
+Write-Host "正在执行：显示文件扩展名、启用长路径支持..."
+# 显示已知文件扩展名
+Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0 -Type DWord -Force
+# 启用长路径支持 (>260字符)
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -Type DWord -Force
+
+# --- 3. 驱动与更新策略 (防止 MX350 驱动被覆盖) ---
+Write-Host "正在执行：禁止 Windows Update 搜索驱动..."
+$wuPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+if (!(Test-Path $wuPath)) { New-Item -Path $wuPath -Force | Out-Null }
+Set-ItemProperty -Path $wuPath -Name "ExcludeWUDriversInQualityUpdate" -Value 1 -Type DWord -Force
+
+# --- 4. 性能释放 (SysMain, GPU计划, 休眠) ---
+Write-Host "正在执行：禁用 SysMain、关闭休眠、启用 HAGS..."
+# 禁用 SysMain (Superfetch)
+Stop-Service -Name "SysMain" -Force -ErrorAction SilentlyContinue
+Set-Service -Name "SysMain" -StartupType Disabled
+# 关闭休眠 (释放 32GB 空间)
+powercfg /h off
+# 启用硬件加速 GPU 计划 (HAGS) - 对应“开启”
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -Value 2 -Type DWord -Force
+
+# --- 5. 极端性能优化 (Spectre/Meltdown 补丁禁用) ---
+Write-Host "正在执行：禁用幽灵/熔断补丁 (提升 IO 性能)..."
+$memPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"
+Set-ItemProperty -Path $memPath -Name "FeatureSettingsOverride" -Value 3 -Type DWord -Force
+Set-ItemProperty -Path $memPath -Name "FeatureSettingsOverrideMask" -Value 3 -Type DWord -Force
+
+# --- 6. 刷新资源管理器以生效 UI 更改 ---
+Write-Host "正在重启资源管理器..."
+Stop-Process -Name explorer -Force
+Start-Sleep -Seconds 2
+Write-Host "✅ 所有 10 项优化已执行完毕。请务必重启电脑以使系统级设置（HAGS、Spectre、SysMain）完全生效。" -ForegroundColor Green
 
 
 
