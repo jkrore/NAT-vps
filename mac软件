@@ -6,3 +6,4 @@
 鼠标转换：Mos
 视频播放：IINA
 有免费的就用免费的没有就破解版的
+ 程序坞 0 秒呼出（无延迟）：defaults write com.apple.dock "autohide-delay" -float "0" && killall Dock
