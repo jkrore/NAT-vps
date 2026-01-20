@@ -1,4 +1,3 @@
-**换源**
 # 1. 更新源并安装必要工具
 apt update && apt install wget gnupg2 -y
 
@@ -99,6 +98,10 @@ EOF
 # 运行优化脚本
 bash opt.sh
 
+
+运行脚本
+bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh) -c
+saas.sin.fan
 
 
 
