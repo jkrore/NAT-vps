@@ -141,38 +141,3 @@ EOF
 
 # 运行验证
 bash verify.sh
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# 1. 更新源并安装必要工具
-apt update && apt install wget gnupg2 -y
-
-# 2. 添加 XanMod 官方源
-wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg
-echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod-release.list
-
-# 3. 安装 v3 版本内核 (适配现代 CPU 指令集)
-apt update && apt install linux-xanmod-x64v3 -y
-
-# 4. 重启系统
-echo "内核安装完成，系统即将重启..."
-reboot
