@@ -1,4 +1,4 @@
-```bash
+```
 # 1. 更新源并安装必要工具
 apt update && apt install wget gnupg2 -y
 
