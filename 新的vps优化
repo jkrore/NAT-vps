@@ -1,0 +1,139 @@
+# 1. 更新源并安装必要工具
+apt update && apt install wget gnupg2 -y
+
+# 2. 添加 XanMod 官方源
+wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg
+echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod-release.list
+
+# 3. 安装 v3 版本内核 (适配现代 CPU 指令集)
+apt update && apt install linux-xanmod-x64v3 -y
+
+# 4. 必须重启以加载新内核！
+echo "内核安装完成，系统即将重启..."
+reboot
+
+
+cat > opt.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 颜色定义
+GREEN='\033[0;32m'; NC='\033[0m'
+log() { echo -e "${GREEN}[+] $*${NC}"; }
+
+log "开始 SA 终极系统调优..."
+
+# 0. 安装硬件管理工具 (补全缺失的工具)
+apt update && apt install -y ethtool linux-cpupower
+
+# 1. 协议栈核心优化 (BBRv3 + 长连接稳定性)
+cat > /etc/sysctl.d/99-sa-ultimate.conf <<CONF
+# --- 拥塞控制 ---
+net.core.default_qdisc = fq_pie
+net.ipv4.tcp_congestion_control = bbr
+
+# --- 关键：解决代理/长连接卡顿与断流 ---
+# 拒绝 TCP 空闲后降速 (对梯子/数据库极其重要)
+net.ipv4.tcp_slow_start_after_idle = 0
+# 开启 MTU 自动探测 (解决部分黑洞路由导致的断流)
+net.ipv4.tcp_mtu_probing = 1
+
+# --- 缓冲区扩容 (32MB, 适配 1G+ 带宽) ---
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.ipv4.tcp_rmem = 4096 131072 33554432
+net.ipv4.tcp_wmem = 4096 131072 33554432
+
+# --- 连接追踪与并发 ---
+net.netfilter.nf_conntrack_max = 262144
+fs.file-max = 2097152
+net.ipv4.tcp_fastopen = 3
+# 稍微激进的内存回收 (适合跑服务)
+vm.swappiness = 10
+vm.vfs_cache_pressure = 50
+CONF
+
+# 应用 Sysctl
+sysctl -p /etc/sysctl.d/99-sa-ultimate.conf
+
+# 2. 解除 Limits 封印
+cat > /etc/security/limits.d/99-sa-limits.conf <<LIMITS
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+LIMITS
+# 同时修改 Systemd 全局限制 (确保服务守护进程也生效)
+sed -i 's/^#DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' /etc/systemd/system.conf
+systemctl daemon-reexec
+
+# 3. 硬件层卸载与 CPU 调度 (软件调优的倍增器)
+log "正在进行硬件层优化..."
+# 自动获取主网卡接口名
+IFACE=$(ip -o route get 1.1.1.1 | awk '{print $5; exit}')
+
+# [关键] 开启网卡硬件卸载 (大幅降低 CPU 软中断占用)
+ethtool -K "$IFACE" tso on gso on gro on 2>/dev/null || true
+# [关键] 加大网卡 Ring Buffer (防止突发流量下的物理丢包)
+ethtool -G "$IFACE" rx 4096 tx 4096 2>/dev/null || true
+
+# [关键] 锁定 CPU 为高性能模式 (拒绝延迟抖动)
+if command -v cpupower &> /dev/null; then
+    cpupower frequency-set -g performance
+else
+    log "cpupower 未找到，尝试直接修改 sysfs..."
+    for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        echo performance > "$cpu" 2>/dev/null || true
+    done
+fi
+
+# 4. SSH 基础优化
+sed -i -E 's/^[#\s]*UseDNS\s+yes/UseDNS no/' /etc/ssh/sshd_config
+sed -i -E 's/^[#\s]*GSSAPIAuthentication\s+yes/GSSAPIAuthentication no/' /etc/ssh/sshd_config
+systemctl restart sshd
+
+log "优化全部完成。硬件卸载已激活，CPU 已锁定高性能。"
+EOF
+
+# 运行优化脚本
+bash opt.sh
+
+
+
+
+
+
+
+
+# 验证
+cat > verify.sh << 'EOF'
+#!/usr/bin/env bash
+set -u
+GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
+
+echo "=== 系统优化验收报告 ==="
+
+# 1. 内核验证
+KV=$(uname -r)
+if [[ "$KV" == *"xanmod"* ]]; then echo -e "${GREEN}[PASS] 内核: $KV${NC}"; else echo -e "${RED}[FAIL] 内核非 XanMod ($KV)${NC}"; fi
+
+# 2. BBRv3 验证
+CC=$(sysctl -n net.ipv4.tcp_congestion_control)
+QD=$(sysctl -n net.core.default_qdisc)
+if [[ "$CC" == "bbr" && "$QD" == "fq_pie" ]]; then echo -e "${GREEN}[PASS] 拥塞控制: BBR + FQ_PIE${NC}"; else echo -e "${RED}[FAIL] BBR 配置错误 ($CC / $QD)${NC}"; fi
+
+# 3. 关键参数验证
+MTU_PROBE=$(sysctl -n net.ipv4.tcp_mtu_probing)
+SLOW_START=$(sysctl -n net.ipv4.tcp_slow_start_after_idle)
+if [[ "$MTU_PROBE" == "1" && "$SLOW_START" == "0" ]]; then echo -e "${GREEN}[PASS] 长连接稳定性参数已生效${NC}"; else echo -e "${RED}[FAIL] 关键稳定性参数未生效${NC}"; fi
+
+# 4. 硬件层验证
+IFACE=$(ip -o route get 1.1.1.1 | awk '{print $5; exit}')
+RING=$(ethtool -g "$IFACE" 2>/dev/null | grep "RX:" | tail -1 | awk '{print $2}')
+if [[ "$RING" -gt 256 ]]; then echo -e "${GREEN}[PASS] 网卡 Ring Buffer 已扩容 ($RING)${NC}"; else echo -e "${RED}[WARN] 网卡 Ring Buffer 可能未生效 ($RING)${NC}"; fi
+
+echo "=== 验收结束 ==="
+EOF
+
+# 运行验证
+bash verify.sh
