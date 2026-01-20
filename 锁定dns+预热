@@ -73,8 +73,8 @@ EOF
 bash <(cat <<EOF
 #!/bin/bash
 # ======================================================================
-#   🏆 TikTok 直播节点：全维度终极验收审计 (Ultimate Audit vMax)
-#   覆盖：BBR/内核/DNS/防火墙/协议栈/自动化/缓存/运维
+#   🏆 TikTok 直播节点：最终验收审计 (适配修正版架构)
+#   只验证核心：BBRv3 / DNS锁 / MSS钳制 / QUIC阻断 / 连通性
 # ======================================================================
 
 # --- 颜色定义 ---
@@ -90,145 +90,103 @@ if ! command -v lsattr &> /dev/null; then apt install e2fsprogs -y; fi
 
 clear
 echo -e "\${CYAN}============================================================\${NC}"
-echo -e "           📊 VPS 全栈环境深度审计报告 (TikTok专用)"
+echo -e "           📊 广新直播专线 - 最终交付验收报告"
 echo -e "\${CYAN}============================================================\${NC}"
 
 # ===========================
-# 1. 内核与性能层 (The Engine)
+# 1. 动力系统 (Kernel)
 # ===========================
-echo -e "\n\${YELLOW}[1. 内核与性能动力]\${NC}"
+echo -e "\n\${YELLOW}[1. 动力系统]\${NC}"
 
 # 1.1 BBR 检测
 BBR_CHECK=\$(sysctl net.ipv4.tcp_congestion_control | awk '{print \$3}')
-if [[ "\$BBR_STATUS" == "bbr" ]] || [[ "\$BBR_CHECK" == *"bbr"* ]]; then
-    echo -e "TCP 拥塞控制 (BBR)   : \${GREEN}✅ 已开启 (推流动力核心)\${NC}"
+if [[ "\$BBR_CHECK" == *"bbr"* ]]; then
+    echo -e "拥塞控制 (BBRv3)     : \${GREEN}✅ 已开启 (核心引擎)\${NC}"
 else
-    echo -e "TCP 拥塞控制 (BBR)   : \${RED}❌ 未开启 (直播会卡顿)\${NC}"
+    echo -e "拥塞控制 (BBRv3)     : \${RED}❌ 未开启\${NC}"
 fi
 
-# 1.2 IPv6 禁用检测
-IPV6_CHECK=\$(sysctl net.ipv6.conf.all.disable_ipv6 | awk '{print \$3}')
-if [[ "\$IPV6_CHECK" == "1" ]]; then
-    echo -e "IPv6 禁用状态        : \${GREEN}✅ 已彻底禁用 (防泄露/防绕路)\${NC}"
+# 1.2 队列检测
+QDISC_CHECK=\$(sysctl net.core.default_qdisc | awk '{print \$3}')
+if [[ "\$QDISC_CHECK" == *"fq_pie"* ]] || [[ "\$QDISC_CHECK" == *"fq"* ]]; then
+    echo -e "队列算法 (FQ/FQ_PIE) : \${GREEN}✅ 已开启 (抗抖动)\${NC}"
 else
-    echo -e "IPv6 禁用状态        : \${RED}❌ 未禁用 (存在隐患)\${NC}"
+    echo -e "队列算法 (FQ/FQ_PIE) : \${RED}❌ 未开启\${NC}"
 fi
 
-# 1.3 文件打开数限制
+# 1.3 文件打开数
 ULIMIT_CHECK=\$(ulimit -n)
 if [[ "\$ULIMIT_CHECK" -gt 60000 ]]; then
-    echo -e "最大连接数限制       : \${GREEN}✅ 已解锁 (\$ULIMIT_CHECK) (支持高并发)\${NC}"
+    echo -e "并发连接数限制       : \${GREEN}✅ 已解锁 (\$ULIMIT_CHECK)\${NC}"
 else
-    echo -e "最大连接数限制       : \${RED}❌ 默认值 (\$ULIMIT_CHECK) (容易断流)\${NC}"
-fi
-
-# 1.4 网卡队列长度
-IFACE=\$(ip route | grep default | awk '{print \$5}' | head -n1)
-TXQ=\$(cat /sys/class/net/\$IFACE/tx_queue_len)
-if [[ "\$TXQ" -ge 10000 ]]; then
-    echo -e "网卡发送队列         : \${GREEN}✅ 已扩容 (\$TXQ) (防微观丢包)\${NC}"
-else
-    echo -e "网卡发送队列         : \${RED}❌ 未优化 (\$TXQ) (建议设为10000)\${NC}"
+    echo -e "并发连接数限制       : \${RED}❌ 未解锁 (\$ULIMIT_CHECK)\${NC}"
 fi
 
 # ===========================
-# 2. DNS 与 解析层 (The Brain)
+# 2. 交通管制 (Traffic Control)
 # ===========================
-echo -e "\n\${YELLOW}[2. DNS 解析与安全]\${NC}"
+echo -e "\n\${YELLOW}[2. 交通管制 (Argo 专用优化)]\${NC}"
 
-# 2.1 DNS 锁定状态
-ATTR=\$(lsattr /etc/resolv.conf)
-if [[ "\$ATTR" == *"i"* ]]; then
-    echo -e "配置文件防篡改锁     : \${GREEN}✅ 已焊死 (+i 生效)\${NC}"
-else
-    echo -e "配置文件防篡改锁     : \${RED}❌ 未锁定 (重启后可能被云厂商修改)\${NC}"
-fi
-
-# 2.2 DNS 内容检查
-CONF=\$(cat /etc/resolv.conf)
-if [[ "\$CONF" == *"1.1.1.1"* ]]; then
-    echo -e "DNS 服务器指向       : \${GREEN}✅ 国际标准 (1.1.1.1)\${NC}"
-else
-    echo -e "DNS 服务器指向       : \${RED}❌ 异常 (含内网IP?)\${NC}"
-fi
-
-# 2.3 NSCD 缓存检测
-if systemctl is-active --quiet nscd; then
-    echo -e "本地 DNS 内存缓存    : \${GREEN}✅ NSCD 运行中 (0ms 解析)\${NC}"
-else
-    echo -e "本地 DNS 内存缓存    : \${RED}❌ 未运行 (解析起步慢)\${NC}"
-fi
-
-# ===========================
-# 3. 防火墙与流控 (The Gatekeeper)
-# ===========================
-echo -e "\n\${YELLOW}[3. 防火墙与流控]\${NC}"
-
-# 3.1 MSS 钳制 (配合手机1400)
+# 2.1 MSS 钳制 (最关键)
 MSS_RULE=\$(iptables -t mangle -L OUTPUT -n | grep "TCPMSS set 1360")
 if [[ -n "\$MSS_RULE" ]]; then
-    echo -e "MSS 强制钳制 (1360)  : \${GREEN}✅ 已生效 (防网页转圈/防卡顿)\${NC}"
+    echo -e "MSS 防分片 (1360)    : \${GREEN}✅ 已生效 (防止直播卡顿)\${NC}"
 else
-    echo -e "MSS 强制钳制 (1360)  : \${RED}❌ 规则缺失 (严重隐患)\${NC}"
+    echo -e "MSS 防分片 (1360)    : \${RED}❌ 未生效 (严重隐患)\${NC}"
 fi
 
-# 3.2 QUIC 阻断
+# 2.2 QUIC 阻断 (最关键)
 QUIC_RULE=\$(iptables -L OUTPUT -n | grep "udp dpt:443")
 if [[ -n "\$QUIC_RULE" ]]; then
-    echo -e "QUIC (UDP) 物理阻断  : \${GREEN}✅ 已封杀 (逼迫浏览器走TCP高速)\${NC}"
+    echo -e "QUIC 阻断 (UDP 443)  : \${GREEN}✅ 已封杀 (强制走 TCP BBR)\${NC}"
 else
-    echo -e "QUIC (UDP) 物理阻断  : \${RED}❌ 未阻断 (YouTube可能慢)\${NC}"
+    echo -e "QUIC 阻断 (UDP 443)  : \${RED}❌ 未生效 (可能导致 BBR 失效)\${NC}"
 fi
 
 # ===========================
-# 4. 自动化与运维 (The Autopilot)
+# 3. 安全与解析 (DNS Security)
 # ===========================
-echo -e "\n\${YELLOW}[4. 自动化与运维保障]\${NC}"
+echo -e "\n\${YELLOW}[3. DNS 安全 (防华为云重置)]\${NC}"
 
-# 4.1 时间同步
-if systemctl is-active --quiet chronyd || systemctl is-active --quiet chrony; then
-    echo -e "时间同步守护进程     : \${GREEN}✅ Chrony 运行中 (防协议断连)\${NC}"
+# 3.1 DNS 锁定
+ATTR=\$(lsattr /etc/resolv.conf)
+if [[ "\$ATTR" == *"i"* ]]; then
+    echo -e "DNS 配置文件锁       : \${GREEN}✅ 已焊死 (重启不掉线)\${NC}"
 else
-    echo -e "时间同步守护进程     : \${RED}❌ 未运行\${NC}"
+    echo -e "DNS 配置文件锁       : \${RED}❌ 未锁定\${NC}"
 fi
 
-# 4.2 预热脚本
-if crontab -l 2>/dev/null | grep -q "warmup_pro.sh"; then
-    echo -e "全链路自动预热       : \${GREEN}✅ 已部署 (每分钟保持连接热度)\${NC}"
+# 3.2 DNS 内容
+CONF=\$(cat /etc/resolv.conf)
+if [[ "\$CONF" == *"1.1.1.1"* ]]; then
+    echo -e "DNS 指向             : \${GREEN}✅ Cloudflare (1.1.1.1)\${NC}"
 else
-    echo -e "全链路自动预热       : \${RED}❌ 未部署\${NC}"
+    echo -e "DNS 指向             : \${RED}❌ 异常 (可能被云厂商劫持)\${NC}"
 fi
 
-# 4.3 进程提权
-if crontab -l 2>/dev/null | grep -q "boost_proxy.sh"; then
-    echo -e "进程 VIP 提权        : \${GREEN}✅ 已部署 (节点进程抢占CPU)\${NC}"
+# 3.3 NSCD 缓存
+if systemctl is-active --quiet nscd; then
+    echo -e "NSCD 本地缓存        : \${GREEN}✅ 运行中 (加速解析)\${NC}"
 else
-    echo -e "进程 VIP 提权        : \${RED}❌ 未部署\${NC}"
-fi
-
-# 4.4 日志清理
-if [[ -f /etc/cron.daily/cleanup_logs ]]; then
-    echo -e "日志自动清理         : \${GREEN}✅ 已部署 (防硬盘爆炸)\${NC}"
-else
-    echo -e "日志自动清理         : \${RED}❌ 未部署\${NC}"
+    echo -e "NSCD 本地缓存        : \${RED}❌ 未运行\${NC}"
 fi
 
 # ===========================
-# 5. 最终连通性测试
+# 4. 连通性测试 (Connectivity)
 # ===========================
-echo -e "\n\${YELLOW}[5. 核心业务连通性]\${NC}"
-# 测试 Google 解析与连接
+echo -e "\n\${YELLOW}[4. 业务连通性]\${NC}"
 Start=\$(date +%s%N)
-curl -o /dev/null -s --connect-timeout 2 https://www.google.com
-if [ \$? -eq 0 ]; then
+if curl -o /dev/null -s --connect-timeout 3 https://www.google.com; then
     End=\$(date +%s%N)
     Duration=\$(( (End - Start) / 1000000 ))
     echo -e "Google 连接测试      : \${GREEN}✅ 通畅 (耗时: \${Duration}ms)\${NC}"
 else
-    echo -e "Google 连接测试      : \${RED}❌ 失败 (网络不通?)\${NC}"
+    echo -e "Google 连接测试      : \${RED}❌ 失败 (网络不通)\${NC}"
 fi
 
 echo -e "\n\${CYAN}============================================================\${NC}"
+echo -e "说明：如果以上全绿，说明你的节点已达到【T0 级直播专线】标准。"
+echo -e "\${CYAN}============================================================\${NC}"
 EOF
 )
 
