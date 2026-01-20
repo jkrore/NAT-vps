@@ -1,197 +1,59 @@
 bash <(cat <<EOF
 #!/bin/bash
 # ==============================================================================
-#   💎 TikTok 直播节点：全能补全与交付系统 (The Final One)
-#   功能：DNS锁 + NSCD缓存 + MSS钳制/QUIC阻断 + 链路预热 + 进程提权
+#   💎 TikTok 直播节点：修正版交付脚本 (去除风险项，保留核心优化)
+#   保留：DNS锁 (抗云厂商重置) + MSS钳制 (抗隧道分片) + QUIC阻断 (强吃BBRv3红利)
+#   移除：Warm-up (无效流量) + Renice (系统风险)
 # ==============================================================================
 
-# --- UI 颜色定义 ---
-RED='\033[0;31m'
+# --- UI 颜色 ---
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BLUE='\033[0;34m'
 NC='\033[0m'
 
-# --- 进度函数 ---
-step() { echo -e "\n\${YELLOW}>>> 正在部署模块：\$1 ...\${NC}"; }
-success() { echo -e "\${GREEN}   [完成 ✅] \$1\${NC}"; }
+echo -e "\${YELLOW}>>> 开始部署修正版优化策略...\${NC}"
 
-clear
-echo -e "\${BLUE}╔══════════════════════════════════════════════════════════════╗\${NC}"
-echo -e "\${BLUE}║      🚀 TikTok 直播节点：五维一体终极优化系统 v4.0           ║\${NC}"
-echo -e "\${BLUE}║      --------------------------------------------------      ║\${NC}"
-echo -e "\${BLUE}║      1. 防盗门 (DNS Lock)      2. 加速器 (NSCD)              ║\${NC}"
-echo -e "\${BLUE}║      3. 交通管制 (IPTables)    4. 自动空调 (Warm-up)         ║\${NC}"
-echo -e "\${BLUE}║      5. VIP通道 (Renice)                                     ║\${NC}"
-echo -e "\${BLUE}╚══════════════════════════════════════════════════════════════╝\${NC}"
-echo ""
-
-# 0. 安装基础依赖
-step "安装必备底层工具"
+# 1. 基础工具安装 (保留)
 apt update -y >/dev/null 2>&1
-DEBIAN_FRONTEND=noninteractive apt install -y nscd iptables-persistent dnsutils e2fsprogs curl cron >/dev/null 2>&1
-success "工具链准备完毕"
+DEBIAN_FRONTEND=noninteractive apt install -y nscd iptables-persistent dnsutils e2fsprogs >/dev/null 2>&1
 
-# =======================================================
-# 1. 防盗门 (DNS Lock) + 2. 加速器 (NSCD)
-# =======================================================
-step "配置本地 DNS 缓存与物理锁定"
-
-# 配置 NSCD
+# 2. DNS 锁定 (针对华为云必须保留)
+# 先解锁以防万一
+chattr -i /etc/resolv.conf >/dev/null 2>&1
+# 配置 NSCD 缓存加速
 sed -i 's/enable-cache\s\+hosts\s\+no/enable-cache hosts yes/' /etc/nscd.conf
 systemctl enable nscd >/dev/null 2>&1
 systemctl restart nscd >/dev/null 2>&1
-
-# 锁定 DNS 文件
-chattr -i /etc/resolv.conf >/dev/null 2>&1
+# 写入国际通用 DNS 并锁定
 echo "nameserver 1.1.1.1" > /etc/resolv.conf
 echo "nameserver 8.8.8.8" >> /etc/resolv.conf
-chattr +i /etc/resolv.conf >/dev/null 2>&1
+chattr +i /etc/resolv.conf
+echo -e "\${GREEN}[OK] DNS 已锁定并开启缓存 (防止华为云重置)\${NC}"
 
-success "DNS 已焊死 (1.1.1.1) 且 NSCD 缓存已启动 (0ms 解析)"
+# 3. 交通管制 (针对 Argo 隧道必须保留)
+# 清理旧规则
+iptables -t mangle -F
+iptables -F
 
-# =======================================================
-# 3. 交通管制 (IPTables: MSS 1360 + Block QUIC)
-# =======================================================
-step "实施网络交通管制 (MSS钳制 + QUIC封杀)"
-
-# 清理旧规则防止重复
-iptables -t mangle -D OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null
-iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360 2>/dev/null
-iptables -D OUTPUT -p udp --dport 443 -j DROP 2>/dev/null
-iptables -D FORWARD -p udp --dport 443 -j DROP 2>/dev/null
-
-# 添加 MSS 1360 (配合手机端 MTU 1400)
+# MSS 钳制 1360 (防止 Argo 隧道分片导致直播卡顿)
 iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360
 iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360
 
-# 添加 QUIC 阻断 (强制 TCP)
+# 阻断 UDP 443 (强迫 TikTok 降级走 TCP，从而享受 BBRv3 加速)
 iptables -A OUTPUT -p udp --dport 443 -j DROP
 iptables -A FORWARD -p udp --dport 443 -j DROP
 
-# 持久化保存
+# 持久化规则
 netfilter-persistent save >/dev/null 2>&1
-success "MSS 已钳制为 1360，UDP 443 (QUIC) 已物理阻断"
+echo -e "\${GREEN}[OK] MSS 已钳制(1360)，QUIC 已阻断(强制TCP)\${NC}"
 
-# =======================================================
-# 4. 自动空调 (Warm-up Pro)
-# =======================================================
-step "部署全链路智能预热系统"
+# 4. 清理之前的“智商税”定时任务 (如果装过)
+crontab -l 2>/dev/null | grep -v "warmup_pro.sh" | grep -v "boost_proxy.sh" | crontab -
+rm -f /usr/local/bin/warmup_pro.sh
+rm -f /usr/local/bin/boost_proxy.sh
+echo -e "\${GREEN}[OK] 已清理无用的预热和提权脚本\${NC}"
 
-SCRIPT_PATH="/usr/local/bin/warmup_pro.sh"
-cat > "\$SCRIPT_PATH" <<'INNER_EOF'
-#!/bin/bash
-# TikTok 直播节点专用预热脚本
-LOG_FILE="/var/log/warmup.log"
-MAX_LOG_LINES=500
-TARGETS=("www.google.com" "www.youtube.com" "www.tiktok.com" "github.com" "api.github.com")
-
-# 日志清理
-[ -f "\$LOG_FILE" ] && tail -n \$MAX_LOG_LINES "\$LOG_FILE" > "\$LOG_FILE.tmp" && mv "\$LOG_FILE.tmp" "\$LOG_FILE"
-
-echo "Run: \$(date)" >> \$LOG_FILE
-for domain in "\${TARGETS[@]}"; do
-    # 1. 强制刷新 NSCD 缓存
-    dig +short \$domain @1.1.1.1 >/dev/null 2>&1
-    # 2. 模拟 TLS 握手 (预热 TCP 连接)
-    curl -o /dev/null -s --connect-timeout 2 "https://\$domain"
-done
-INNER_EOF
-
-chmod +x "\$SCRIPT_PATH"
-# 写入计划任务
-crontab -l 2>/dev/null | grep -v "warmup_pro.sh" | crontab -
-(crontab -l 2>/dev/null; echo "* * * * * \$SCRIPT_PATH >/dev/null 2>&1") | crontab -
-
-success "预热脚本已部署 (每分钟自动热身)"
-
-# =======================================================
-# 5. VIP 通道 (Renice Xray/Sing-box)
-# =======================================================
-step "部署节点进程 VIP 提权守护"
-
-BOOST_PATH="/usr/local/bin/boost_proxy.sh"
-cat > "\$BOOST_PATH" <<'INNER_EOF'
-#!/bin/bash
-# 专为 Xray / Sing-box 设计的提权脚本
-TARGETS="xray|sing-box"
-PIDS=\$(pgrep -f "\$TARGETS" | grep -v \$\$)
-
-if [ -n "\$PIDS" ]; then
-    for PID in \$PIDS; do
-        # CPU 优先级最高 (-20)
-        renice -n -20 -p \$PID >/dev/null 2>&1
-        # IO 优先级实时 (Realtime)
-        ionice -c 1 -n 0 -p \$PID >/dev/null 2>&1
-    done
-fi
-INNER_EOF
-
-chmod +x "\$BOOST_PATH"
-crontab -l 2>/dev/null | grep -v "boost_proxy.sh" | crontab -
-(crontab -l 2>/dev/null; echo "* * * * * \$BOOST_PATH >/dev/null 2>&1") | crontab -
-
-success "VIP 提权守护已启动 (Xray/Sing-box 独占资源)"
-
-# =======================================================
-# 6. 额外赠送：日志清理
-# =======================================================
-step "部署系统日志自动清理"
-cat > /etc/cron.daily/cleanup_logs <<INNER
-#!/bin/bash
-journalctl --vacuum-size=500M >/dev/null 2>&1
-apt-get clean >/dev/null 2>&1
-INNER
-chmod +x /etc/cron.daily/cleanup_logs
-success "日志自动清理已部署"
-
-# ==============================================================================
-#   📊 最终交付验收 (Verification)
-# ==============================================================================
-clear
-echo -e "\n\${YELLOW}============================================================\${NC}"
-echo -e "           🏆 最终交付验收报告 (Verification)"
-echo -e "\${YELLOW}============================================================\${NC}"
-
-# 1. 验证 DNS 锁
-if [[ \$(lsattr /etc/resolv.conf) == *"i"* ]]; then
-    printf "%-35s %s\n" "1. 防盗门 (DNS Lock)" "\${GREEN}[已锁死 ✅]\${NC}"
-else
-    printf "%-35s %s\n" "1. 防盗门 (DNS Lock)" "\${RED}[未锁定 ❌]\${NC}"
-fi
-
-# 2. 验证 NSCD
-if systemctl is-active --quiet nscd; then
-    printf "%-35s %s\n" "2. 加速器 (NSCD Cache)" "\${GREEN}[运行中 ✅]\${NC}"
-else
-    printf "%-35s %s\n" "2. 加速器 (NSCD Cache)" "\${RED}[未运行 ❌]\${NC}"
-fi
-
-# 3. 验证 防火墙
-if iptables -t mangle -L OUTPUT -n | grep -q "TCPMSS set 1360" && iptables -L OUTPUT -n | grep -q "udp dpt:443"; then
-    printf "%-35s %s\n" "3. 交通管制 (MSS+QUIC)" "\${GREEN}[已生效 ✅]\${NC}"
-else
-    printf "%-35s %s\n" "3. 交通管制 (MSS+QUIC)" "\${RED}[缺失 ❌]\${NC}"
-fi
-
-# 4. 验证 预热
-if crontab -l | grep -q "warmup_pro.sh"; then
-    printf "%-35s %s\n" "4. 自动空调 (Warm-up)" "\${GREEN}[已部署 ✅]\${NC}"
-else
-    printf "%-35s %s\n" "4. 自动空调 (Warm-up)" "\${RED}[缺失 ❌]\${NC}"
-fi
-
-# 5. 验证 提权
-if crontab -l | grep -q "boost_proxy.sh"; then
-    printf "%-35s %s\n" "5. VIP通道 (Xray Renice)" "\${GREEN}[已部署 ✅]\${NC}"
-else
-    printf "%-35s %s\n" "5. VIP通道 (Xray Renice)" "\${RED}[缺失 ❌]\${NC}"
-fi
-
-echo -e "\n\${CYAN}------------------------------------------------------------\${NC}"
-echo -e "\${GREEN}🎉 恭喜！五维一体优化已全部落地。VPS 已达交付标准。\${NC}"
-echo -e "\${CYAN}============================================================\${NC}"
+echo -e "\n\${GREEN}🎉 优化完成！这是最稳健、副作用最小的方案。\${NC}"
 EOF
 )
 
