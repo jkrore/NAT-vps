@@ -16,86 +16,41 @@ reboot
 cat > opt.sh << 'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-
-# 颜色定义
 GREEN='\033[0;32m'; NC='\033[0m'
 log() { echo -e "${GREEN}[+] $*${NC}"; }
 
-log "开始 SA 终极系统调优..."
+log "开始 SA 终极系统调优 (修正版)..."
 
-# 0. 安装硬件管理工具 (补全缺失的工具)
 apt update && apt install -y ethtool linux-cpupower
 
-# 1. 协议栈核心优化 (BBRv3 + 长连接稳定性)
 cat > /etc/sysctl.d/99-sa-ultimate.conf <<CONF
-# --- 拥塞控制 ---
-net.core.default_qdisc = fq_pie
+net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
-
-# --- 关键：解决代理/长连接卡顿与断流 ---
-# 拒绝 TCP 空闲后降速 (对梯子/数据库极其重要)
 net.ipv4.tcp_slow_start_after_idle = 0
-# 开启 MTU 自动探测 (解决部分黑洞路由导致的断流)
 net.ipv4.tcp_mtu_probing = 1
-
-# --- 缓冲区扩容 (32MB, 适配 1G+ 带宽) ---
-net.core.rmem_max = 33554432
-net.core.wmem_max = 33554432
-net.ipv4.tcp_rmem = 4096 131072 33554432
-net.ipv4.tcp_wmem = 4096 131072 33554432
-
-# --- 连接追踪与并发 ---
+net.core.rmem_max = 8388608
+net.core.wmem_max = 8388608
+net.ipv4.tcp_rmem = 4096 87380 8388608
+net.ipv4.tcp_wmem = 4096 16384 8388608
 net.netfilter.nf_conntrack_max = 262144
 fs.file-max = 2097152
 net.ipv4.tcp_fastopen = 3
-# 稍微激进的内存回收 (适合跑服务)
 vm.swappiness = 10
-vm.vfs_cache_pressure = 50
 CONF
 
-# 应用 Sysctl
 sysctl -p /etc/sysctl.d/99-sa-ultimate.conf
 
-# 2. 解除 Limits 封印
-cat > /etc/security/limits.d/99-sa-limits.conf <<LIMITS
-* soft nofile 1048576
-* hard nofile 1048576
-root soft nofile 1048576
-root hard nofile 1048576
-LIMITS
-# 同时修改 Systemd 全局限制 (确保服务守护进程也生效)
-sed -i 's/^#DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' /etc/systemd/system.conf
-systemctl daemon-reexec
-
-# 3. 硬件层卸载与 CPU 调度 (软件调优的倍增器)
-log "正在进行硬件层优化..."
-# 自动获取主网卡接口名
+# 强制关闭硬件卸载 (防止 VPS 丢包)
 IFACE=$(ip -o route get 1.1.1.1 | awk '{print $5; exit}')
+ethtool -K "$IFACE" tso off gso off gro off lro off ufo off 2>/dev/null || true
 
-# [关键] 开启网卡硬件卸载 (大幅降低 CPU 软中断占用)
-ethtool -K "$IFACE" tso on gso on gro on 2>/dev/null || true
-# [关键] 加大网卡 Ring Buffer (防止突发流量下的物理丢包)
-ethtool -G "$IFACE" rx 4096 tx 4096 2>/dev/null || true
+# CPU 高性能锁定
+for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    echo performance > "$cpu" 2>/dev/null || true
+done
 
-# [关键] 锁定 CPU 为高性能模式 (拒绝延迟抖动)
-if command -v cpupower &> /dev/null; then
-    cpupower frequency-set -g performance
-else
-    log "cpupower 未找到，尝试直接修改 sysfs..."
-    for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-        echo performance > "$cpu" 2>/dev/null || true
-    done
-fi
-
-# 4. SSH 基础优化
-sed -i -E 's/^[#\s]*UseDNS\s+yes/UseDNS no/' /etc/ssh/sshd_config
-sed -i -E 's/^[#\s]*GSSAPIAuthentication\s+yes/GSSAPIAuthentication no/' /etc/ssh/sshd_config
-systemctl restart sshd
-
-log "优化全部完成。硬件卸载已激活，CPU 已锁定高性能。"
+log "优化全部完成。网卡卸载已关闭，确保了 VPS 的兼容性。"
 EOF
-
-# 运行优化脚本
 bash opt.sh
 
 
