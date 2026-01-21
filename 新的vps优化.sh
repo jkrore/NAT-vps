@@ -19,10 +19,12 @@ set -euo pipefail
 GREEN='\033[0;32m'; NC='\033[0m'
 log() { echo -e "${GREEN}[+] $*${NC}"; }
 
-log "开始 SA 终极系统调优 (修正版)..."
+log "开始系统核心调优..."
 
+# 安装必要工具
 apt update && apt install -y ethtool linux-cpupower
 
+# 1. 写入系统参数 (BBRv3 + 8MB 稳健缓冲区)
 cat > /etc/sysctl.d/99-sa-ultimate.conf <<CONF
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
@@ -37,20 +39,20 @@ fs.file-max = 2097152
 net.ipv4.tcp_fastopen = 3
 vm.swappiness = 10
 CONF
-
 sysctl -p /etc/sysctl.d/99-sa-ultimate.conf
 
-# 强制关闭硬件卸载 (防止 VPS 丢包)
+# 2. 关闭网卡硬件卸载 (修复虚拟化丢包的核心)
 IFACE=$(ip -o route get 1.1.1.1 | awk '{print $5; exit}')
 ethtool -K "$IFACE" tso off gso off gro off lro off ufo off 2>/dev/null || true
 
-# CPU 高性能锁定
+# 3. CPU 性能模式锁定
 for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
     echo performance > "$cpu" 2>/dev/null || true
 done
 
-log "优化全部完成。网卡卸载已关闭，确保了 VPS 的兼容性。"
+log "调优完成！网卡卸载已关闭，BBRv3 已激活。"
 EOF
+
 bash opt.sh
 
 
@@ -58,6 +60,34 @@ bash opt.sh
 bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh) -c
 saas.sin.fan
 
+
+bash <(cat <<EOF
+#!/bin/bash
+echo ">>> 部署直播专项优化策略..."
+
+# 1. DNS 锁定 (防止华为云等重置)
+chattr -i /etc/resolv.conf 2>/dev/null || true
+apt install -y nscd iptables-persistent >/dev/null 2>&1
+echo "nameserver 1.1.1.1" > /etc/resolv.conf
+echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+chattr +i /etc/resolv.conf
+
+# 2. 流量规则清理与重塑
+iptables -t mangle -F
+iptables -F
+
+# MSS 钳制 1360 (抗 Argo 隧道分片)
+iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360
+iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360
+
+# 阻断 UDP 443 (强制 TikTok 走 TCP)
+iptables -A OUTPUT -p udp --dport 443 -j DROP
+
+# 持久化规则
+netfilter-persistent save
+echo "🎉 所有优化已完成！"
+EOF
+)
 
 
 
