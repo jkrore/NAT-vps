@@ -89,7 +89,7 @@ echo "✅ 业务防火墙规则已部署！"
 
 
 # 自动带入优选域名参数 -c saas.sin.fan
-bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh) -c saas.sin.fan
+bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh) -c 
 
 
 
