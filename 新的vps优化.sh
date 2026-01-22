@@ -1,4 +1,4 @@
-# 1. 基础环境
+# 1. 基础环境准备
 export DEBIAN_FRONTEND=noninteractive
 apt update -y && apt install -y wget gnupg2 lsb-release
 
@@ -10,25 +10,26 @@ echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.
 # 3. 安装 v3 版本内核
 echo "正在安装内核..."
 apt update -y
-# 智能回退机制：优先装v3，不行装标准版
+# 智能安装：优先装 v3，不支持则装标准版
 if ! apt install -y linux-xanmod-x64v3; then
-    echo "CPU不支持v3，降级安装标准版..."
+    echo "CPU 不支持 v3，降级安装标准版..."
     apt install -y linux-xanmod-x64
 fi
 
-echo "✅ 内核安装完成！请执行 'reboot' 重启系统。"
+echo "✅ 内核安装完成！正在重启系统..."
+reboot
 
 
-# 1. 安装工具
+# 1. 安装必要工具
 apt install -y ethtool iptables-persistent nscd dnsutils iputils-ping curl
 
-# 2. 注入核心参数 (BBRv3 + 8MB 缓冲区)
-# 作用：修复上传速度慢、网络抖动大
+# 2. 写入内核参数 (BBRv3 + 8MB 缓冲区)
 rm -f /etc/sysctl.d/99-*.conf
 cat > /etc/sysctl.d/99-sa-ultimate.conf <<CONF
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_slow_start_after_idle = 0
+# 8MB 缓冲区：适合 4K 视频，防止延迟抖动
 net.core.rmem_max = 8388608
 net.core.wmem_max = 8388608
 net.ipv4.tcp_rmem = 4096 87380 8388608
@@ -38,13 +39,13 @@ net.ipv4.tcp_mtu_probing = 1
 CONF
 sysctl -p /etc/sysctl.d/99-sa-ultimate.conf
 
-# 3. 修复虚拟化丢包 (写入开机自启)
-# 作用：修复 16% 的物理丢包
+# 3. 修复虚拟化丢包 (写入开机自启服务)
+# 自动获取网卡名称
 IFACE=$(ip -o route get 1.1.1.1 | awk '{print $5; exit}')
 # 立即执行一次
 ethtool -K "$IFACE" tso off gso off gro off lro off ufo off 2>/dev/null || true
 
-# 写入服务文件
+# 写入 Systemd 服务文件
 cat > /etc/systemd/system/nic-fix.service <<SERVICE
 [Unit]
 Description=Fix VirtIO Packet Loss
@@ -64,11 +65,16 @@ systemctl start nic-fix.service
 
 echo "✅ 系统参数与网卡修复已完成！"
 
+
+
+
+
+
 # 1. 清理旧规则
 iptables -F
 iptables -t mangle -F
 
-# 2. MSS 钳制 1360 (Argo 防卡顿核心)
+# 2. 设置 MSS 1360 (防卡顿核心)
 iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360
 iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360
 
@@ -76,7 +82,7 @@ iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss
 iptables -A OUTPUT -p udp --dport 443 -j DROP
 iptables -A FORWARD -p udp --dport 443 -j DROP
 
-# 4. 持久化规则
+# 4. 持久化保存规则
 netfilter-persistent save
 
 # 5. 锁定 DNS (防止华为云重置)
@@ -95,9 +101,9 @@ bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-b
 
 
 clear
-echo "------ 广新专线最终验收 ------"
-echo "1. 内核: $(uname -r) (必须包含 xanmod)"
+clear
+echo "------ 最终验收 ------"
+echo "1. 内核: $(uname -r) (必须含 xanmod)"
 echo "2. 网卡: $(ethtool -k $(ip -o route get 1 | awk '{print $5}') | grep tcp-segmentation | awk '{print $2}') (必须是 off)"
 echo "3. BBR : $(sysctl -n net.ipv4.tcp_congestion_control)"
-echo "4. 规则: $(iptables -t mangle -L OUTPUT -n | grep 1360 | wc -l) 条 MSS 规则"
-echo "------------------------------"
+echo "----------------------"
