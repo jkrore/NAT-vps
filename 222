@@ -1,0 +1,244 @@
+// ==UserScript==
+// @name        m3u8提取
+// @namespace    tianya
+// @version      1.0
+// @author       memopac (modified)
+// @description  点击按钮提取m3u8链接并复制
+// @license      MIT
+// @match        *://*.haijiao.com/*
+// @match        *://*/post/details*
+// @grant        GM_addStyle
+// @grant        GM_setClipboard
+// @grant        unsafeWindow
+// @run-at       document-start
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // 存储捕获到的m3u8链接
+    let capturedM3u8Url = '';
+
+    // 添加样式
+    GM_addStyle(`
+        #hj-extract-btn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            border: none;
+            cursor: pointer;
+            z-index: 999999;
+            font-size: 24px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            transition: all 0.3s ease;
+        }
+        #hj-extract-btn:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+        }
+        #hj-extract-btn.success {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+        }
+        #hj-extract-btn.error {
+            background: linear-gradient(135deg, #f44336, #d32f2f);
+        }
+        #hj-toast {
+            position: fixed;
+            bottom: 100px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            z-index: 999999;
+            font-size: 14px;
+            max-width: 300px;
+            word-break: break-all;
+            display: none;
+        }
+    `);
+
+    // 解析m3u8地址
+    const getRealVideoSrc = (content, requestUrl) => {
+        try {
+            if (content.includes("#EXTM3U")) {
+                const baseUrl = requestUrl.substring(0, requestUrl.lastIndexOf('/') + 1);
+                const filenameMatch = content.match(/([\w_]+_?)[\d]+\.ts/);
+                if (filenameMatch) {
+                    return baseUrl + filenameMatch[1] + ".m3u8";
+                }
+            } else {
+                let ts_path = content.split("\n")[6];
+                let reg = ts_path.match(/([\w_]+_?)[\d]+\.ts/);
+                if (reg) {
+                    return ts_path.replace(reg[0], reg[1] + ".m3u8");
+                }
+            }
+        } catch (error) {
+            console.error("解析视频URL失败:", error);
+        }
+        return "";
+    };
+
+    // 解密函数
+    const bareDecode = (text) => {
+        return JSON.parse(atob(atob(atob(text))));
+    };
+
+    const isString = (data) => Object.prototype.toString.call(data) === "[object String]";
+    const isObject = (data) => Object.prototype.toString.call(data) === "[object Object]";
+
+    const decodeEncryptString = (text) => {
+        let data = text;
+        try {
+            if (isString(text)) {
+                const tmpDataObj = JSON.parse(text);
+                if (isObject(tmpDataObj?.data)) {
+                    data = tmpDataObj.data;
+                } else if (isString(tmpDataObj?.data)) {
+                    data = bareDecode(tmpDataObj.data);
+                }
+            }
+        } catch (error) {
+            console.log("失败");
+        }
+        return data;
+    };
+
+    // Hook XMLHttpRequest
+    const originalXHR = unsafeWindow.XMLHttpRequest;
+    unsafeWindow.XMLHttpRequest = function() {
+        const xhr = new originalXHR();
+        const originalOpen = xhr.open;
+        const originalSend = xhr.send;
+        let requestUrl = '';
+
+        xhr.open = function(method, url) {
+            requestUrl = url;
+            return originalOpen.apply(this, arguments);
+        };
+
+        xhr.send = function() {
+            xhr.addEventListener('load', function() {
+                try {
+                    // 捕获视频地址请求
+                    if (requestUrl.includes("/api/address/")) {
+                        const videoSrc = getRealVideoSrc(xhr.responseText, requestUrl);
+                        if (videoSrc) {
+                            capturedM3u8Url = videoSrc;
+                            updateButtonState('success');
+                            console.log('[海角脚本] 捕获到m3u8:', videoSrc);
+                        }
+                    }
+                    // 捕获帖子详情中的视频
+                    if (/\/api\/topic\/\d+/.test(requestUrl)) {
+                        const data = decodeEncryptString(xhr.responseText);
+                        if (data?.attachments) {
+                            data.attachments.forEach(async (element) => {
+                                if (element.category === "video" && element.remoteUrl) {
+                                    try {
+                                        const response = await fetch(element.remoteUrl);
+                                        const content = await response.text();
+                                        const videoSrc = getRealVideoSrc(content, element.remoteUrl);
+                                        if (videoSrc) {
+                                            capturedM3u8Url = videoSrc;
+                                            updateButtonState('success');
+                                            console.log('捕获到m3u8:', videoSrc);
+                                        }
+                                    } catch(e) {}
+                                }
+                            });
+                        }
+                    }
+                } catch(e) {}
+            });
+            return originalSend.apply(this, arguments);
+        };
+
+        return xhr;
+    };
+
+    // 更新按钮状态
+    function updateButtonState(state) {
+        const btn = document.getElementById('hj-extract-btn');
+        if (!btn) return;
+
+        btn.className = '';
+        if (state === 'success') {
+            btn.classList.add('success');
+            btn.textContent = '✓';
+        } else if (state === 'error') {
+            btn.classList.add('error');
+            btn.textContent = '✗';
+        } else {
+            btn.textContent = '📋';
+        }
+    }
+
+    // 显示提示
+    function showToast(message, duration = 3000) {
+        let toast = document.getElementById('hj-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'hj-toast';
+            document.body.appendChild(toast);
+        }
+        toast.textContent = message;
+        toast.style.display = 'block';
+        setTimeout(() => {
+            toast.style.display = 'none';
+        }, duration);
+    }
+
+    function createButton() {
+        if (document.getElementById('hj-extract-btn')) return;
+
+        const btn = document.createElement('button');
+        btn.id = 'hj-extract-btn';
+        btn.textContent = '📋';
+        btn.title = '点击复制m3u8链接';
+
+        btn.addEventListener('click', () => {
+            if (capturedM3u8Url) {
+                GM_setClipboard(capturedM3u8Url, 'text/plain');
+                showToast('✅ 已复制: ' + capturedM3u8Url);
+                btn.textContent = '✓';
+                setTimeout(() => {
+                    btn.textContent = '📋';
+                }, 2000);
+            } else {
+                showToast('❌未检测到视频，请先播放视频');
+                btn.classList.add('error');
+                btn.textContent = '✗';
+                setTimeout(() => {
+                    btn.classList.remove('error');
+                    btn.textContent = '📋';
+                }, 2000);
+            }
+        });
+
+        document.body.appendChild(btn);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', createButton);
+    } else {
+        createButton();
+    }
+
+    // 监听URL变化，重置状态
+    let lastUrl = location.href;
+    new MutationObserver(() => {
+        if (location.href !== lastUrl) {
+            lastUrl = location.href;
+            capturedM3u8Url = '';
+            updateButtonState('');
+        }
+    }).observe(document, {subtree: true, childList: true});
+
+})();
