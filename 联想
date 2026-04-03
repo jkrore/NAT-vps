@@ -11,37 +11,74 @@ adb shell pm uninstall --user 0 com.xiaoji.egggame
 adb shell pm uninstall --user 0 com.lenovo.leos.cloud.sync
 adb shell pm uninstall --user 0 com.zui.weather
 adb shell pm uninstall --user 0 com.baidu.map.location
+adb shell pm uninstall --user 0 com.zui.push
+adb shell pm uninstall --user 0 com.zui.cloud
+adb shell pm uninstall --user 0 com.lenovo.ads
+adb shell pm uninstall --user 0 com.lenovo.analytics
+adb shell pm uninstall --user 0 com.lenovo.push
+adb shell pm uninstall --user 0 com.zui.adservices
+adb shell pm uninstall --user 0 com.zui.stats
+adb shell pm uninstall --user 0 com.zui.browser
+adb shell pm uninstall --user 0 com.zui.feedback
+adb shell pm uninstall --user 0 com.zui.assistant
+adb shell pm uninstall --user 0 com.zui.tassistent
 
 
-AI相关（全部属于“系统AI功能”）
+🤖 AI类
 com.zui.ai.lens
-👉 系统AI识图（类似扫一扫/识物）
+👉 AI识图/扫一扫
 com.zui.ai.assistant
-👉 系统AI助手（类似小爱同学）
+👉 系统AI助手
 com.zui.ai.stylus
-👉 手写笔AI增强（识别/优化笔迹）
+👉 手写笔AI增强
 com.zui.writingtools
-👉 AI写作/文本生成工具
-语音相关（全部是“语音助手体系”）
+👉 AI写作工具
+🎤 语音助手
 com.lenovo.xiaotian.trigger
-👉 唤醒“小天助手”的监听服务
+👉 语音助手唤醒监听
 com.lenovo.levoice_agent
-👉 语音助手主程序
+👉 语音助手核心
 com.lenovo.levoice.caption
-👉 实时语音转字幕功能
-推荐 / 系统引导（广告+提示类）
+👉 实时语音转字幕
+📢 推荐/提示
 com.tblenovo.ue.config
-👉 用户体验配置（推荐/引导/策略下发）
+👉 系统推荐/策略配置
 com.tblenovo.lenovowhatsnew
-👉 系统“新功能提示/更新介绍”
-娱乐 / 预装
+👉 新功能提示/弹窗
+🎮 娱乐
 com.xiaoji.egggame
 👉 联想游戏中心
-云 / 同步
+☁ 云服务
 com.lenovo.leos.cloud.sync
-👉 联想云同步（账号/数据备份）
-系统工具类（低价值后台）
+👉 联想云同步
+🌤 系统工具
 com.zui.weather
-👉 系统天气服务（后台刷新）
+👉 天气后台服务
 com.baidu.map.location
-👉 百度定位SDK（给部分APP用的定位服务）
+👉 百度定位服务
+🔔 推送/广告（重点大头）
+com.zui.push
+👉 系统推送
+com.lenovo.push
+👉 联想推送
+com.lenovo.ads
+👉 广告服务
+com.lenovo.analytics
+👉 用户行为统计
+com.zui.adservices
+👉 广告SDK
+com.zui.stats
+👉 系统统计上报
+☁ 生态/云残留
+com.zui.cloud
+👉 联想云服务组件
+🧠 助手/系统残留
+com.zui.assistant
+👉 桌面助手
+com.zui.tassistent
+👉 系统助手服务
+🌐 其他
+com.zui.browser
+👉 系统浏览器
+com.zui.feedback
+👉 系统反馈/日志上传
