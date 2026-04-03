@@ -1,0 +1,26 @@
+adb shell pm uninstall -k --user 0 com.zui.push
+adb shell pm uninstall -k --user 0 com.zui.cloud
+adb shell pm uninstall -k --user 0 com.lenovo.ads
+adb shell pm uninstall -k --user 0 com.lenovo.analytics
+adb shell pm uninstall -k --user 0 com.lenovo.push
+adb shell pm uninstall -k --user 0 com.zui.adservices
+adb shell pm uninstall -k --user 0 com.zui.stats
+adb shell pm uninstall -k --user 0 com.zui.weather
+adb shell pm uninstall -k --user 0 com.zui.browser
+adb shell pm uninstall -k --user 0 com.zui.feedback
+adb shell pm uninstall -k --user 0 com.zui.assistant
+adb shell pm uninstall -k --user 0 com.zui.tassistent
+
+
+com.zui.push,系统推送广告服务（弹窗、通知）,完全无用,彻底杜绝弹窗
+com.zui.cloud,联想云同步 + 推送服务,完全无用,减少后台联网
+com.lenovo.ads,联想系统级广告框架（最核心的广告引擎）,完全无用,底层广告彻底关闭
+com.lenovo.analytics,联想底层数据统计引擎（记录你用什么App）,完全无用,隐私更好、省电
+com.lenovo.push,联想全局推送服务（和zui.push是两个独立组件）,完全无用,双重推送全断
+com.zui.adservices,ZUI专用广告服务,完全无用,广告下发系统关闭
+com.zui.stats,ZUI状态与数据统计（后台偷偷收集信息）,完全无用,统计引擎停止
+com.zui.weather,桌面天气小部件,完全无用,去掉天气组件
+com.zui.browser,ZUI自带浏览器,完全无用,可以安心用Chrome
+com.zui.feedback,用户反馈入口,完全无用,界面更干净
+com.zui.assistant,ZUI智能助手（全局AI助手）,完全无用,去掉常驻AI
+com.zui.tassistent,语音助手变体（小天助手相关）,完全无用,进一步清理助手
