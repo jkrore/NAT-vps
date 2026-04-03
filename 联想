@@ -1,12 +1,47 @@
-adb shell pm uninstall -k --user 0 com.zui.browser & adb shell pm uninstall -k --user 0 com.zui.tassistent & adb shell pm uninstall -k --user 0 com.zui.ai.aiservice & adb shell pm uninstall -k --user 0 com.lenovo.menu_assistant.hd & adb shell pm uninstall -k --user 0 com.tblenovo.tabpushout & adb shell pm uninstall -k --user 0 com.lenovo.weathercenter & adb shell pm uninstall -k --user 0 com.xiaoji.egggame.lenovo & adb shell pm uninstall -k --user 0 com.lenovo.lenovoprivacy
+adb shell pm uninstall --user 0 com.zui.ai.lens
+adb shell pm uninstall --user 0 com.zui.ai.assistant
+adb shell pm uninstall --user 0 com.zui.ai.stylus
+adb shell pm uninstall --user 0 com.zui.writingtools
+adb shell pm uninstall --user 0 com.lenovo.xiaotian.trigger
+adb shell pm uninstall --user 0 com.lenovo.levoice_agent
+adb shell pm uninstall --user 0 com.lenovo.levoice.caption
+adb shell pm uninstall --user 0 com.tblenovo.ue.config
+adb shell pm uninstall --user 0 com.tblenovo.lenovowhatsnew
+adb shell pm uninstall --user 0 com.xiaoji.egggame
+adb shell pm uninstall --user 0 com.lenovo.leos.cloud.sync
+adb shell pm uninstall --user 0 com.zui.weather
+adb shell pm uninstall --user 0 com.baidu.map.location
 
 
-
-浏览器	zui.browser
-助手	zui.tassistent
-AI	zui.ai.aiservice
-联想助手	menu_assistant
-推送广告	tabpushout
-天气	weathercenter
-游戏中心	egggame
-隐私服务	lenovoprivacy
+AI相关（全部属于“系统AI功能”）
+com.zui.ai.lens
+👉 系统AI识图（类似扫一扫/识物）
+com.zui.ai.assistant
+👉 系统AI助手（类似小爱同学）
+com.zui.ai.stylus
+👉 手写笔AI增强（识别/优化笔迹）
+com.zui.writingtools
+👉 AI写作/文本生成工具
+语音相关（全部是“语音助手体系”）
+com.lenovo.xiaotian.trigger
+👉 唤醒“小天助手”的监听服务
+com.lenovo.levoice_agent
+👉 语音助手主程序
+com.lenovo.levoice.caption
+👉 实时语音转字幕功能
+推荐 / 系统引导（广告+提示类）
+com.tblenovo.ue.config
+👉 用户体验配置（推荐/引导/策略下发）
+com.tblenovo.lenovowhatsnew
+👉 系统“新功能提示/更新介绍”
+娱乐 / 预装
+com.xiaoji.egggame
+👉 联想游戏中心
+云 / 同步
+com.lenovo.leos.cloud.sync
+👉 联想云同步（账号/数据备份）
+系统工具类（低价值后台）
+com.zui.weather
+👉 系统天气服务（后台刷新）
+com.baidu.map.location
+👉 百度定位SDK（给部分APP用的定位服务）
