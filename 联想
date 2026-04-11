@@ -82,3 +82,11 @@ com.zui.browser
 👉 系统浏览器
 com.zui.feedback
 👉 系统反馈/日志上传
+
+
+
+
+禁用系统更新主程序
+adb shell pm disable-user com.lenovo.ota
+重新启用系统更新主程序
+adb shell pm enable com.lenovo.ota
