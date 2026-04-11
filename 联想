@@ -90,3 +90,5 @@ com.zui.feedback
 adb shell pm disable-user com.lenovo.ota
 重新启用系统更新主程序
 adb shell pm enable com.lenovo.ota
+删除下载过的安装包
+adb shell pm clear com.lenovo.ota
