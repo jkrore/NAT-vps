@@ -1,5 +1,4 @@
 #搭建 hostnamectl set-hostname 名字   🦄🍕 🚀🌍
-vmpt="" name="🦄™️godeluoo" ippz="4" argo="vmpt" bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)
 
 #root登录
 # 1. 强行开启 Root 登录
@@ -30,21 +29,7 @@ bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/argox/main/argox.sh)
 bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh) -c
 bash <(curl -sL kejilion.sh)
 
-#更新 
-apt install sudo -y && \
-sudo apt --fix-broken install -y && \
-sudo apt update -y && \
-sudo apt install -y \
-    curl wget ca-certificates gnupg lsb-release \
-    tasksel socat apt-listchanges && \
-sudo tasksel install standard ssh-server && \
-sudo apt clean && \
-echo "===== 基础工具验证 =====" && \
-curl --version && wget --version && \
-echo "===== 网络工具验证 =====" && \
-socat -V && \
-echo "===== SSH服务状态 =====" && \
-sudo systemctl status ssh --no-pager
+
 
 #重置
 curl -O https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh || wget -O ${_##*/} $_
@@ -56,13 +41,6 @@ bash reinstall.sh windows \
      --rdp-port 3389 \
      --web-port 8080 \
      --allow-ping
-
-
-#暴力发包
-apt-get install linux-headers-$(uname -r) -y
-#换内核
-bash <(curl -l -s https://raw.githubusercontent.com/charmtv/ml-bbrv3/refs/heads/main/install.sh)
-wget -O tcpx.sh "https://github.com/ylx2016/Linux-NetSpeed/raw/master/tcpx.sh" && chmod +x tcpx.sh && ./tcpx.sh
 
 
 
