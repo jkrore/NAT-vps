@@ -27,7 +27,8 @@ echo "blacklist virtio_balloon" > /etc/modprobe.d/balloon.conf
 
 #xray
 bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/argox/main/argox.sh) -c
-bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh) -2
+bash <(wget -qO- https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh) -c
+bash <(curl -sL kejilion.sh)
 
 #更新 
 apt install sudo -y && \
