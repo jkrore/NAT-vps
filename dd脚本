@@ -1,5 +1,9 @@
 #搭建 hostnamectl set-hostname 名字   🦄🍕 🚀🌍
 
+电信单独：cf.tencentapp.cn
+移动单独：store.ubi.com
+联通单独：staticdelivery.nexusmods.com
+
 #root登录
 # 1. 强行开启 Root 登录
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
